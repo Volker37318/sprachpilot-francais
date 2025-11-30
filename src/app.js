@@ -1,16 +1,20 @@
 // src/app.js – Vor-A1 / Klassensprache Französisch
 // Flow: Lernen → Bilder & Tippen → Hör-Quiz
-// Aussprache-Check (JETZT OHNE SERVER): Browser-Spracherkennung (Web Speech API) + einfacher Text-Score
-// Hinweis: Funktioniert am besten in Chrome/Edge. Kein Koyeb/Netlify für die Auswertung nötig.
+// Aussprache-Check (OHNE SERVER): Browser-Spracherkennung + Text-Score
+// Weiter nur ab 85% (grün).
+// Quiz-Bilder: /assets/<block>-<pos>.png (z.B. /assets/1-1.png ... /assets/1-4.png)
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
 
-// Frontend würde sonst die Netlify Function rufen:
+// (Server-URL bleibt drin, wird im Browser-Mode nicht benutzt)
 const PRONOUNCE_URL_DEFAULT = "/.netlify/functions/pronounce";
 
-// >>> Schalter: jetzt lokal (ohne Koyeb)
+// >>> Schalter: lokal ohne Koyeb
 const PRONOUNCE_MODE = "browser"; // "browser" | "server"
+
+const PASS_THRESHOLD = 85;
+const QUIZ_IMAGE_BASE = "/assets/";
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -24,8 +28,11 @@ let currentBlockIndex = 0;
 let currentPhase = "learn"; // 'learn' | 'shuffle' | 'quiz'
 let currentItemIndex = 0;
 
-let quizTargetItem = null;
 let quizAttemptsLeft = 3;
+
+// Reihenfolgen pro Block/Phase (damit es NICHT 1-2-3-4 wird)
+let shuffleOrder = []; // Reihenfolge der Zielwörter in Phase 2
+let quizOrder = [];    // Reihenfolge der Zielwörter in Phase 3
 
 // TTS-Setup
 let ttsSupported = "speechSynthesis" in window;
@@ -147,7 +154,7 @@ function _grade(score) {
          score >= 60 ? "ok" : "try_again";
 }
 
-// ---- Self-check: Proxy erreichbar? (nur wenn PRONOUNCE_MODE === "server") ----
+// ---- Self-check (nur wenn server) ----
 (async function pingPronounceProxy() {
   if (PRONOUNCE_MODE !== "server") {
     console.log("[PRONOUNCE] Local mode (browser ASR) active.");
@@ -194,17 +201,21 @@ function startLesson() {
 }
 
 function startBlock(index) {
-  stopMicIfNeeded(); // Sicherheit
+  stopMicIfNeeded();
   currentBlockIndex = index;
   currentPhase = "learn";
   currentItemIndex = 0;
-  quizTargetItem = null;
   quizAttemptsLeft = 3;
+
+  // Orders für den neuen Block zurücksetzen
+  shuffleOrder = [];
+  quizOrder = [];
+
   render();
 }
 
 function nextPhaseOrBlock() {
-  stopMicIfNeeded(); // Sicherheit
+  stopMicIfNeeded();
   const blocks = lesson.blocks;
 
   if (currentPhase === "learn") currentPhase = "shuffle";
@@ -220,8 +231,13 @@ function nextPhaseOrBlock() {
   }
 
   currentItemIndex = 0;
-  quizTargetItem = null;
   quizAttemptsLeft = 3;
+
+  // Reihenfolgen pro Phase einmalig festlegen
+  const block = lesson.blocks[currentBlockIndex];
+  if (currentPhase === "shuffle") shuffleOrder = shuffleArray([...block.items]);
+  if (currentPhase === "quiz") quizOrder = shuffleArray([...block.items]);
+
   render();
 }
 
@@ -236,7 +252,20 @@ function render() {
   else renderQuizPhase(block);
 }
 
-// Phase 1: Icon + Wort + Hören + Aussprache prüfen
+// Bildzuordnung: Wort -> feste Bilddatei (z.B. 1-1.png gehört immer zu item #1 im Block)
+function getQuizImageSrc(block, it) {
+  try {
+    const pos = block.items.findIndex((x) => x.id === it.id); // 0..3
+    if (pos >= 0 && pos < 4) {
+      const blockNo = currentBlockIndex + 1; // 1..n
+      return `${QUIZ_IMAGE_BASE}${blockNo}-${pos + 1}.png`;
+    }
+  } catch {}
+  return it.image; // fallback
+}
+
+// ----------------- Phase 1: Lernen (Aussprache prüfen) -----------------
+
 function renderLearnPhase(block) {
   const item = block.items[currentItemIndex];
 
@@ -280,6 +309,8 @@ function renderLearnPhase(block) {
   btnHear.onclick = () => speakWord(item.word, 1.0);
   btnHearSlow.onclick = () => speakWord(item.word, 0.7);
 
+  btnNext.disabled = true;
+
   btnSpeak.onclick = async () => {
     const clearAutoStop = () => {
       try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
@@ -291,66 +322,59 @@ function renderLearnPhase(block) {
 
       clearAutoStop();
       btnSpeak.disabled = true;
-      setSpeakFeedback("Verarbeite…");
+      setSpeakFeedback("Verarbeite…", null);
 
-      let result;
+      let recognizedText = "";
+      let overallScore = 0;
 
       if (PRONOUNCE_MODE === "browser") {
-        const recognizedText = await stopBrowserASR();
-        const sim = _similarityScore(item.word, recognizedText);
-        const overallScore = Math.round(sim * 100);
-        result = {
-          ok: true,
-          overallScore,
-          grade: _grade(overallScore),
-          details: { recognizedText }
-        };
+        recognizedText = await stopBrowserASR();
+        const exact = _norm(item.word) && (_norm(item.word) === _norm(recognizedText));
+        const sim = exact ? 1 : _similarityScore(item.word, recognizedText);
+        overallScore = Math.round(sim * 100);
       } else {
-        // Server-Mode (falls du später wieder zurück willst)
         const audioDataUrl = await stopMicGetWavDataUrl();
         const audioBase64 = toPureBase64(audioDataUrl);
-        result = await callPronounce({ targetText: item.word, language: "fr-FR", audioBase64 });
+        const result = await callPronounce({ targetText: item.word, language: "fr-FR", audioBase64 });
+        overallScore = result?.overallScore ?? 0;
+        recognizedText = result?.details?.recognizedText || "";
       }
 
       micRecording = false;
       btnSpeak.textContent = "🎤 Ich spreche";
 
-      const overall = result?.overallScore ?? 0;
-      const recText = result?.details?.recognizedText || "";
-      const grade = result?.grade || "";
+      const grade = _grade(overallScore);
+      const pass = overallScore >= PASS_THRESHOLD;
 
-      const pass = overall >= 85;
+      btnNext.disabled = !pass;
 
       setSpeakFeedback(
-        `Score: ${overall}/100 (${grade})` +
-        (recText ? ` · Erkannt: „${recText}“` : "") +
-        (pass ? " ✅" : " ❌")
+        `Aussprache: ${overallScore}% (${grade})` +
+        (recognizedText ? ` · Erkannt: „${recognizedText}“` : " · Erkannt: (leer)") +
+        (pass ? " ✅ Weiter" : ` ❌ Nochmal (ab ${PASS_THRESHOLD}%)`),
+        pass
       );
 
-      btnNext.disabled = false;
       btnSpeak.disabled = false;
     };
 
     try {
       if (!micRecording) {
         stopMicIfNeeded();
-        btnNext.disabled = true;
 
         if (PRONOUNCE_MODE === "browser") {
           if (!speechRecAvailable()) {
-            setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.");
-            btnNext.disabled = false;
+            setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
             return;
           }
-          setSpeakFeedback("Spracherkennung läuft… sprich kurz (ca. 2–3 Sekunden). Dann Stop drücken.");
+          setSpeakFeedback("Sprich jetzt 2–3 Sekunden. Dann Stop drücken.", null);
           const started = startBrowserASR("fr-FR");
           if (!started) {
-            setSpeakFeedback("Spracherkennung konnte nicht gestartet werden. Bitte neu laden und erneut versuchen.");
-            btnNext.disabled = false;
+            setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
             return;
           }
         } else {
-          setSpeakFeedback("Aufnahme läuft… sprich kurz (ca. 2–3 Sekunden). Dann Stop drücken.");
+          setSpeakFeedback("Aufnahme läuft… sprich kurz (2–3 Sekunden). Dann Stop drücken.", null);
           await startMicWav16k();
         }
 
@@ -361,7 +385,7 @@ function renderLearnPhase(block) {
         autoStopTimer = setTimeout(() => {
           stopAndAssess().catch((e) => {
             console.error(e);
-            setSpeakFeedback("Fehler beim Aufnehmen/Prüfen. Bitte nochmal versuchen.");
+            setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
           });
         }, 3500);
       } else {
@@ -370,19 +394,15 @@ function renderLearnPhase(block) {
     } catch (e) {
       console.error(e);
       clearAutoStop();
-      setSpeakFeedback("Fehler beim Aufnehmen/Prüfen. Bitte nochmal versuchen.");
+      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
       micRecording = false;
       stopMicIfNeeded();
-
-      const btnSpeakNow = document.getElementById("btn-speak");
-      if (btnSpeakNow) {
-        btnSpeakNow.disabled = false;
-        btnSpeakNow.textContent = "🎤 Ich spreche";
+      if (btnSpeak) {
+        btnSpeak.disabled = false;
+        btnSpeak.textContent = "🎤 Ich spreche";
       }
-      btnNext.disabled = false;
     } finally {
-      const btnSpeakNow = document.getElementById("btn-speak");
-      if (btnSpeakNow) btnSpeakNow.disabled = false;
+      if (btnSpeak) btnSpeak.disabled = false;
     }
   };
 
@@ -397,23 +417,41 @@ function renderLearnPhase(block) {
   };
 }
 
-// Phase 2: Bilder gemischt + richtiges Icon
+// ----------------- Phase 2: Bilder & Wörter (4er Pack, Grid jedes Mal neu gemischt) -----------------
+
 function renderShufflePhase(block) {
   stopMicIfNeeded();
-  const items = shuffleArray([...block.items]);
+
+  // Reihenfolge der Zielwörter pro Block/Phase EINMAL festlegen
+  if (!shuffleOrder || shuffleOrder.length !== block.items.length) {
+    shuffleOrder = shuffleArray([...block.items]);
+  }
+
+  // Wenn fertig: weiter
+  if (currentItemIndex >= shuffleOrder.length) {
+    currentItemIndex = 0;
+    nextPhaseOrBlock();
+    return;
+  }
+
+  const targetItem = shuffleOrder[currentItemIndex];
+
+  // Grid-Order pro Aufgabe neu gemischt (damit nicht "1-2-3-4")
+  const gridItems = shuffleArray([...block.items]);
 
   appEl.innerHTML = `
     <div class="screen screen-shuffle">
       <div class="meta">
         <div class="badge">Block ${currentBlockIndex + 1} – Phase 2</div>
+        <div class="badge">Aufgabe ${currentItemIndex + 1} von ${shuffleOrder.length}</div>
       </div>
       <h1>Bilder & Wörter</h1>
       <p>Höre das Wort und tippe das richtige Bild.</p>
 
       <div class="icon-grid">
-        ${items.map((it) => `
+        ${gridItems.map((it) => `
           <button class="icon-card" data-id="${it.id}">
-            <img src="${it.image}" alt="${escapeHtml(it.word)}">
+            <img src="${getQuizImageSrc(block, it)}" alt="${escapeHtml(it.word)}">
           </button>
         `).join("")}
       </div>
@@ -426,9 +464,7 @@ function renderShufflePhase(block) {
     </div>
   `;
 
-  let targetItem = items[currentItemIndex];
   const feedbackEl = document.getElementById("shuffle-feedback");
-
   const playTarget = () => speakWord(targetItem.word, 1.0);
   document.getElementById("btn-play-target").onclick = playTarget;
   playTarget();
@@ -440,42 +476,51 @@ function renderShufflePhase(block) {
         feedbackEl.textContent = "❌ Falsch. Tippe ein anderes Bild.";
         return;
       }
-      feedbackEl.textContent = "✅ Richtiges Bild! Sprich das Wort laut für dich.";
+      feedbackEl.textContent = "✅ Richtig!";
 
       setTimeout(() => {
-        if (currentItemIndex < block.items.length - 1) {
-          currentItemIndex++;
-          renderShufflePhase(block);
-        } else {
-          currentItemIndex = 0;
-          nextPhaseOrBlock();
-        }
-      }, 800);
+        currentItemIndex++;
+        renderShufflePhase(block);
+      }, 700);
     };
   });
 }
 
-// Phase 3: Hör-Quiz mit 3 Versuchen
+// ----------------- Phase 3: Hör-Quiz (4er Pack, Ziel-Reihenfolge random; Grid jedes Mal neu gemischt) -----------------
+
 function renderQuizPhase(block) {
   stopMicIfNeeded();
-  const items = shuffleArray([...block.items]);
-  if (!quizTargetItem) {
-    quizTargetItem = items[0];
-    quizAttemptsLeft = 3;
+
+  // Reihenfolge der Zielwörter pro Block/Phase EINMAL festlegen
+  if (!quizOrder || quizOrder.length !== block.items.length) {
+    quizOrder = shuffleArray([...block.items]);
   }
+
+  // Wenn fertig: Block/Ende
+  if (currentItemIndex >= quizOrder.length) {
+    nextPhaseOrBlock();
+    return;
+  }
+
+  const targetItem = quizOrder[currentItemIndex];
+
+  // Grid-Order pro Aufgabe neu gemischt (damit nicht "1-2-3-4")
+  const gridItems = shuffleArray([...block.items]);
 
   appEl.innerHTML = `
     <div class="screen screen-quiz">
       <div class="meta">
         <div class="badge">Block ${currentBlockIndex + 1} – Phase 3</div>
+        <div class="badge">Aufgabe ${currentItemIndex + 1} von ${quizOrder.length}</div>
+        <div class="badge">Versuche: ${quizAttemptsLeft}</div>
       </div>
       <h1>Hör-Quiz</h1>
       <p>Höre das Wort und tippe auf das richtige Bild.</p>
 
       <div class="icon-grid">
-        ${items.map((it) => `
+        ${gridItems.map((it) => `
           <button class="icon-card" data-id="${it.id}">
-            <img src="${it.image}" alt="${escapeHtml(it.word)}">
+            <img src="${getQuizImageSrc(block, it)}" alt="${escapeHtml(it.word)}">
           </button>
         `).join("")}
       </div>
@@ -489,47 +534,40 @@ function renderQuizPhase(block) {
   `;
 
   const feedbackEl = document.getElementById("quiz-feedback");
-  const playTarget = () => speakWord(quizTargetItem.word, 1.0);
+  const playTarget = () => speakWord(targetItem.word, 1.0);
   document.getElementById("btn-play-quiz").onclick = playTarget;
   playTarget();
+
+  const markCorrect = () => {
+    appEl.querySelector(`.icon-card[data-id="${targetItem.id}"]`)?.classList.add("correct");
+  };
 
   appEl.querySelectorAll(".icon-card").forEach((btn) => {
     btn.onclick = () => {
       const id = btn.getAttribute("data-id");
-      if (id === quizTargetItem.id) {
+
+      if (id === targetItem.id) {
         feedbackEl.textContent = "✅ Richtig!";
-        appEl.querySelector(`.icon-card[data-id="${quizTargetItem.id}"]`)?.classList.add("correct");
+        markCorrect();
 
         setTimeout(() => {
-          quizTargetItem = null;
           quizAttemptsLeft = 3;
-
-          if (currentItemIndex < block.items.length - 1) {
-            currentItemIndex++;
-            renderQuizPhase(block);
-          } else {
-            nextPhaseOrBlock();
-          }
-        }, 900);
+          currentItemIndex++;
+          renderQuizPhase(block);
+        }, 850);
       } else {
         quizAttemptsLeft--;
         if (quizAttemptsLeft > 0) {
-          feedbackEl.textContent = `❌ Falsch. Du hast noch ${quizAttemptsLeft} Möglichkeiten.`;
+          feedbackEl.textContent = `❌ Falsch. Noch ${quizAttemptsLeft} Versuch(e).`;
         } else {
           feedbackEl.textContent = "❌ Leider falsch. Das richtige Bild ist markiert.";
-          appEl.querySelector(`.icon-card[data-id="${quizTargetItem.id}"]`)?.classList.add("correct");
+          markCorrect();
 
           setTimeout(() => {
-            quizTargetItem = null;
             quizAttemptsLeft = 3;
-
-            if (currentItemIndex < block.items.length - 1) {
-              currentItemIndex++;
-              renderQuizPhase(block);
-            } else {
-              nextPhaseOrBlock();
-            }
-          }, 1200);
+            currentItemIndex++;
+            renderQuizPhase(block);
+          }, 1100);
         }
       }
     };
@@ -550,7 +588,6 @@ function renderEndScreen() {
 }
 
 // ----------------- TTS -----------------
-
 function initTTS() {
   if (!ttsSupported) {
     status("⚠️ Sprachausgabe wird von diesem Browser nicht unterstützt.");
@@ -672,13 +709,11 @@ function stopMicIfNeeded() {
   try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
   autoStopTimer = null;
 
-  // stop ASR (wenn läuft)
   if (_sr) {
     try { _sr.stop(); } catch {}
     _sr = null;
   }
 
-  // stop WAV recorder (wenn im server mode genutzt)
   if (wavRec && typeof wavRec.stop === "function") {
     try { wavRec.stop(); } catch {}
   }
@@ -811,7 +846,6 @@ function blobToDataURL(blob) {
 }
 
 // ----------------- Hilfsfunktionen -----------------
-
 function shuffleArray(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -821,9 +855,22 @@ function shuffleArray(arr) {
   return a;
 }
 
-function setSpeakFeedback(text) {
+function setSpeakFeedback(text, pass) {
   const el = document.getElementById("speak-feedback");
-  if (el) el.textContent = text;
+  if (!el) return;
+
+  el.textContent = text || "";
+
+  if (pass === true) {
+    el.style.color = "#16a34a";
+    el.style.fontWeight = "800";
+  } else if (pass === false) {
+    el.style.color = "#dc2626";
+    el.style.fontWeight = "800";
+  } else {
+    el.style.color = "";
+    el.style.fontWeight = "";
+  }
 }
 
 function escapeHtml(str) {
@@ -838,3 +885,4 @@ function escapeHtml(str) {
 function writeStr(view, offset, str) {
   for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
 }
+
