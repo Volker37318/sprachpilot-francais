@@ -19,7 +19,7 @@ const LESSON_ID = "W1D1";
 
 const PASS_EXACT = 100;          // nur bei 100% automatisch weiter
 const FAILS_FOR_SKIP = 5;        // nach 5x falsch -> Skip-Button aktiv
-const AUTO_ADVANCE_MS = 4000;    // 4 Sekunden Anzeige bei 100%
+const AUTO_ADVANCE_MS = 2500;    // 2,5 Sekunden Anzeige bei 100%
 
 const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // => /assets/images/W1D1/
 
@@ -1117,3 +1117,4 @@ function shuffleArray(arr) {
 function takeN(arr, n) {
   return arr.slice(0, Math.max(0, n));
 }
+
