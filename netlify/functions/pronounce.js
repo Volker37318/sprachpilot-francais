@@ -28,7 +28,8 @@ exports.handler = async (event) => {
 
   try {
     const KOYEB_URL = process.env.KOYEB_PRONOUNCE_URL; // z.B. https://...koyeb.app/pronounce
-    const SECRET = process.env.PRONOUNCE_SECRET;       // spfr-2025-test
+   const SECRET = process.env.PRONOUNCE_SECRET; // set in Netlify env vars
+
 
     if (!KOYEB_URL) {
       return {
@@ -73,3 +74,4 @@ exports.handler = async (event) => {
     };
   }
 };
+
