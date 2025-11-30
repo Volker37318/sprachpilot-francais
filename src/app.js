@@ -1,3 +1,5 @@
+"use strict";
+
 // src/app.js – Vor-A1 / Klassensprache Französisch
 // Flow: Lernen → Bilder & Tippen → Hör-Quiz
 // Aussprache-Check FINAL: Browser -> Netlify Function -> Koyeb (/pronounce) -> Azure
@@ -33,6 +35,29 @@ let ttsVoice = null;
 let micRecording = false;
 let wavRec = null;
 let autoStopTimer = null;
+
+// Optionaler Health-Check (zeigt sofort, ob die Netlify Function existiert)
+let pronounceProxyReady = null;
+(async function healthCheckPronounceProxy() {
+  try {
+    const r = await fetch(PRONOUNCE_URL_DEFAULT, { method: "GET", cache: "no-store" });
+    if (!r.ok) {
+      pronounceProxyReady = false;
+      console.warn("[PRONOUNCE] Proxy not reachable:", r.status);
+      return;
+    }
+    const j = await r.json().catch(() => null);
+    pronounceProxyReady = !!(j && j.ok);
+    if (pronounceProxyReady) {
+      console.log("[PRONOUNCE] Proxy ready.");
+    } else {
+      console.warn("[PRONOUNCE] Proxy responded, but not ok:", j);
+    }
+  } catch (e) {
+    pronounceProxyReady = false;
+    console.warn("[PRONOUNCE] Proxy check failed:", e);
+  }
+})();
 
 // TTS initialisieren
 initTTS();
@@ -171,11 +196,21 @@ function renderLearnPhase(block) {
       btnSpeak.disabled = true;
       setSpeakFeedback("Verarbeite Audio…");
 
-      // stop wav recorder -> DataURL (data:audio/wav;base64,...)
       const audioDataUrl = await stopMicGetWavDataUrl();
 
       micRecording = false;
       btnSpeak.textContent = "🎤 Ich spreche";
+
+      // Wenn Proxy definitiv fehlt, sag es sofort klar (ohne Rätselraten)
+      if (pronounceProxyReady === false) {
+        setSpeakFeedback(
+          "Aussprache-Prüfung ist nicht erreichbar (Proxy fehlt / 404). " +
+          "Prüfe: /.netlify/functions/pronounce"
+        );
+        btnNext.disabled = false;
+        btnSpeak.disabled = false;
+        return;
+      }
 
       const result = await callPronounce({
         targetText: item.word,
@@ -201,7 +236,6 @@ function renderLearnPhase(block) {
 
     try {
       if (!micRecording) {
-        // Start recording (WAV16k)
         stopMicIfNeeded();
         setSpeakFeedback("Aufnahme läuft… sprich kurz (ca. 2–3 Sekunden). Dann Stop drücken.");
         btnNext.disabled = true;
@@ -210,7 +244,6 @@ function renderLearnPhase(block) {
         micRecording = true;
         btnSpeak.textContent = "⏹ Stop";
 
-        // Auto-Stop nach 3.5s (damit Payload klein bleibt)
         clearAutoStop();
         autoStopTimer = setTimeout(() => {
           stopAndAssess().catch((e) => {
@@ -219,7 +252,6 @@ function renderLearnPhase(block) {
           });
         }, 3500);
       } else {
-        // Manual stop + assess
         await stopAndAssess();
       }
     } catch (e) {
@@ -383,8 +415,7 @@ function renderQuizPhase(block) {
         if (quizAttemptsLeft > 0) {
           feedbackEl.textContent = `❌ Falsch. Du hast noch ${quizAttemptsLeft} Möglichkeiten.`;
         } else {
-          feedbackEl.textContent =
-            "❌ Leider falsch. Das richtige Bild ist markiert.";
+          feedbackEl.textContent = "❌ Leider falsch. Das richtige Bild ist markiert.";
           appEl
             .querySelector(`.icon-card[data-id="${quizTargetItem.id}"]`)
             ?.classList.add("correct");
@@ -484,9 +515,17 @@ async function callPronounce({ targetText, language, audioDataUrl }) {
     cache: "no-store"
   });
 
-  const json = await resp.json().catch(() => ({}));
+  // Wenn Netlify eine HTML-404-Seite liefert, ist JSON kaputt -> wir geben besseres Debug zurück
+  const text = await resp.text();
+  let json = {};
+  try { json = JSON.parse(text); } catch {}
+
   if (!resp.ok) {
-    throw new Error(json?.error || `Pronounce failed (${resp.status})`);
+    const hint =
+      resp.status === 404
+        ? " (Netlify Function nicht gefunden: stimmt netlify.toml functions-Pfad + Repo-Pfad netlify/functions?)"
+        : "";
+    throw new Error((json && json.error) || `Pronounce failed (${resp.status})${hint}`);
   }
   return json;
 }
