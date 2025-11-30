@@ -6,25 +6,13 @@
 // Danach: Phase 3 (Globales Hör-Quiz aus 12 Bildern, 4er Pack, ohne Beschriftung)
 // Danach: Phase 4 (Sätze nachsprechen, Score ≥ 85% zum Weiter)
 // Danach: Ende
-//
-// BILD-ZUORDNUNG (EXAKT nach User-Vorgabe):
-// bild1-1.png = Ecouter
-// bild1-2.png = Repeter
-// bild1-3.png = Lire
-// bild1-4.png = Ecrire
-// bild2-1.png = Voir
-// bild2-2.png = Ouvrir
-// bild2-3.png = Fermer
-// bild2-4.png = Trouver
-// bild3-1.png = Livre
-// bild3-2.png = Page
-// bild3-3.png = Numero
-// bild4-4.png = Tache
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
 
 const PASS_THRESHOLD = 85;
+const FAILS_FOR_SKIP = 5;
+
 const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // => /assets/images/W1D1/
 
 const appEl = document.getElementById("app");
@@ -37,20 +25,20 @@ const status = (msg) => {
 let lesson = null;
 
 // Block-Flow
-let currentBlockIndex = 0; // 0-based
+let currentBlockIndex = 0;
 let currentPhase = "learn"; // "learn" | "shuffle" | "quiz" | "sentences"
 let currentItemIndex = 0;
 
-// Phase 2: Ziel-Reihenfolge pro Block
+// Phase 2
 let shuffleOrder = [];
 
-// Phase 3: Global Quiz
-let quizPool = [];        // 12 Items
-let quizTargetOrder = []; // gemischte Reihenfolge der Ziele
+// Phase 3
+let quizPool = [];
+let quizTargetOrder = [];
 let quizIndex = 0;
 let quizAttemptsLeft = 3;
 
-// Phase 4: Sätze
+// Phase 4
 let sentenceList = [];
 let sentenceIndex = 0;
 
@@ -63,6 +51,9 @@ let ttsActive = false;
 // ASR state
 let micRecording = false;
 let autoStopTimer = null;
+
+// Fail counter (pro aktuellem Wort/Satz)
+let currentFailCount = 0;
 
 // UI lock refresh callback
 let _uiRefreshLocks = null;
@@ -88,19 +79,16 @@ function wordKeyForMap(raw) {
     .trim();
 }
 
-// Map-Key auch für Formen wie "le livre", "la page", "tâche", "le numéro" etc.
 function mapKeyFromPhrase(wordOrPhrase) {
   const k = wordKeyForMap(wordOrPhrase);
   const parts = k.split(" ").filter(Boolean);
   if (!parts.length) return "";
 
-  // entferne führende Artikel
   let start = 0;
   while (start < parts.length && ARTICLES.has(parts[start])) start++;
 
   const core = parts.slice(start);
   if (core.length) {
-    // letztes Kernwort, aber falls Zahl dran hängt: entfernen
     const last = core[core.length - 1].replace(/[0-9]+$/g, "");
     return last || core[core.length - 1];
   }
@@ -131,7 +119,6 @@ function imageSrcForWord(wordOrPhrase) {
   return file ? (IMAGE_DIR + file) : "";
 }
 
-// Fallback: falls deine PNG nicht gefunden wird, nimm lesson-json image
 function attachImgFallbacks() {
   appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
     const fb = img.getAttribute("data-fallback") || "";
@@ -232,28 +219,14 @@ function _tokensNoArticles(s) {
     .filter(t => !ARTICLES.has(t));
 }
 
-function _joinNoArticles(s) {
-  return _tokensNoArticles(s).join(" ").trim();
-}
-
-// WICHTIGER FIX: Imperativ/Grundform als gleich behandeln.
-// Chrome erkennt Befehle oft als Infinitiv (fermer/ouvrir/trouver...) statt "ferme/ouvre/trouve".
 const FR_VERB_LEMMA = {
-  // écouter
   ecoute: "ecouter", ecouter: "ecouter",
-  // répéter
   repete: "repeter", repeter: "repeter",
-  // lire
   lis: "lire", lire: "lire",
-  // écrire
   ecris: "ecrire", ecrire: "ecrire",
-  // voir
   vois: "voir", voir: "voir",
-  // ouvrir
   ouvre: "ouvrir", ouvrir: "ouvrir", ouvert: "ouvrir",
-  // fermer
   ferme: "fermer", fermer: "fermer",
-  // trouver
   trouve: "trouver", trouver: "trouver"
 };
 
@@ -261,7 +234,6 @@ function canonicalFrenchForScoring(s) {
   const toks = _tokensNoArticles(s);
   if (!toks.length) return "";
   const out = [...toks];
-  // erste Position (Verb) lemmatisieren, wenn bekannt
   out[0] = FR_VERB_LEMMA[out[0]] || out[0];
   return out.join(" ").trim();
 }
@@ -311,16 +283,13 @@ function _tokenSimilarity(target, heard) {
 }
 
 function scoreSpeech(target, heard) {
-  // 1) Canonical-Form (ohne Artikel, Verb lemmatisiert)
   const tCan = canonicalFrenchForScoring(target);
   const hCan = canonicalFrenchForScoring(heard);
 
-  // Exakt in Canonical => 100%
   if (tCan && hCan && tCan === hCan) {
     return { overall: 100, grade: "excellent", pass: true, exactLoose: true };
   }
 
-  // 2) Hybrid-Score auf Canonical-Form (stabiler)
   const cs = _charSimilarity(tCan || target, hCan || heard);
   const ts = _tokenSimilarity(tCan || target, hCan || heard);
   const sim = (0.7 * cs) + (0.3 * ts);
@@ -364,6 +333,7 @@ function startLesson() {
   quizIndex = 0;
   quizAttemptsLeft = 3;
   sentenceIndex = 0;
+  currentFailCount = 0;
   render();
 }
 
@@ -426,8 +396,6 @@ function buildSentenceList() {
   if (has("trouver") && has("tache"))  list.push({ text: "Trouve la tâche.", de: "Finde die Aufgabe." });
   if (has("voir") && has("page"))      list.push({ text: "Vois la page.", de: "Sieh die Seite." });
   if (has("repeter") && has("numero")) list.push({ text: "Répète le numéro.", de: "Wiederhole die Nummer." });
-  if (has("ouvrir") && has("page"))    list.push({ text: "Ouvre la page.", de: "Öffne die Seite." });
-  if (has("fermer") && has("page"))    list.push({ text: "Ferme la page.", de: "Schließe die Seite." });
 
   if (list.length < 6) {
     const fallback = [
@@ -464,6 +432,9 @@ function renderLearnPhase(block) {
   const item = block.items[currentItemIndex];
   const blockNo = currentBlockIndex + 1;
 
+  // Reset Failcounter pro Wort
+  currentFailCount = 0;
+
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
@@ -485,9 +456,10 @@ function renderLearnPhase(block) {
         <button id="btn-hear-slow" class="btn secondary">Langsam</button>
       </div>
 
-      <div class="controls-speak">
-        <button id="btn-speak" class="btn mic">${micRecording ? "Stop" : "Ich spreche"}</button>
-        <div id="speak-feedback" class="feedback"></div>
+      <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <button id="btn-speak" class="btn mic">Ich spreche</button>
+        <button id="btn-skip" class="btn secondary" disabled>Später</button>
+        <div id="speak-feedback" class="feedback" style="flex-basis:100%;"></div>
       </div>
 
       <div class="controls-nav">
@@ -499,6 +471,7 @@ function renderLearnPhase(block) {
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
+  const btnSkip = document.getElementById("btn-skip");
   const btnNext = document.getElementById("btn-next");
 
   const localRefresh = () => {
@@ -506,7 +479,8 @@ function renderLearnPhase(block) {
     const tts = ttsActive;
     btnHear.disabled = rec || tts;
     btnHearSlow.disabled = rec || tts;
-    btnSpeak.disabled = tts;
+    btnSpeak.disabled = rec || tts; // während Aufnahme/TTs gesperrt
+    // btnSkip wird über Failcounter gesteuert
   };
   setUiRefreshLocks(localRefresh);
   localRefresh();
@@ -514,9 +488,15 @@ function renderLearnPhase(block) {
   btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(item.word, 1.0); };
   btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(item.word, 0.7); };
 
-  btnNext.disabled = true;
+  btnSkip.onclick = () => {
+    setSpeakFeedback("Wir kommen später zurück.", null);
+    btnNext.disabled = false;
+  };
 
   btnSpeak.onclick = async () => {
+    // Kein Klick-Stop mehr: nur Start, dann Auto-Stop nach 3.5s
+    if (micRecording) return;
+
     const clearAutoStop = () => {
       try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
       autoStopTimer = null;
@@ -526,77 +506,76 @@ function renderLearnPhase(block) {
       if (!micRecording) return;
 
       clearAutoStop();
-      btnSpeak.disabled = true;
       setSpeakFeedback("Verarbeite…", null);
 
       const recognizedText = await stopBrowserASR();
       const res = scoreSpeech(item.word, recognizedText);
 
       micRecording = false;
-      btnSpeak.textContent = "Ich spreche";
+      refreshLocks();
+
+      if (!res.pass) {
+        currentFailCount++;
+      }
+
+      // Skip erst nach 5x falsch
+      if (currentFailCount >= FAILS_FOR_SKIP) {
+        btnSkip.disabled = false;
+      }
 
       btnNext.disabled = !res.pass;
 
       setSpeakFeedback(
         `Aussprache: ${res.overall}% (${res.grade})` +
         (recognizedText ? ` · Erkannt: „${recognizedText}“` : " · Erkannt: (leer)") +
-        (res.pass ? ` · Weiter` : ` · Nochmal (ab ${PASS_THRESHOLD}%)`),
+        (res.pass ? ` · Weiter` : ` · Nochmal (ab ${PASS_THRESHOLD}%) (${currentFailCount}/${FAILS_FOR_SKIP})`),
         res.pass
       );
-
-      btnSpeak.disabled = false;
-      refreshLocks();
     };
 
     try {
-      if (!micRecording) {
-        stopAllAudioStates();
+      stopAllAudioStates();
 
-        if (!speechRecAvailable()) {
-          setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
-          return;
-        }
-
-        setSpeakFeedback("Sprich jetzt 2–3 Sekunden. Dann Stop drücken.", null);
-        btnNext.disabled = true;
-
-        try { window.speechSynthesis.cancel(); } catch {}
-        ttsActive = false;
-        refreshLocks();
-        await sleep(150);
-
-        const started = startBrowserASR("fr-FR");
-        if (!started) {
-          setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
-          return;
-        }
-
-        micRecording = true;
-        btnSpeak.textContent = "Stop";
-        refreshLocks();
-
-        clearAutoStop();
-        autoStopTimer = setTimeout(() => {
-          stopAndAssess().catch((e) => {
-            console.error(e);
-            setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
-          });
-        }, 3500);
-      } else {
-        await stopAndAssess();
+      if (!speechRecAvailable()) {
+        setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
+        return;
       }
+
+      setSpeakFeedback("Sprich jetzt. Die Aufnahme stoppt automatisch.", null);
+      btnNext.disabled = true;
+
+      try { window.speechSynthesis.cancel(); } catch {}
+      ttsActive = false;
+      refreshLocks();
+      await sleep(150);
+
+      const started = startBrowserASR("fr-FR");
+      if (!started) {
+        setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
+        return;
+      }
+
+      micRecording = true;
+      refreshLocks();
+
+      clearAutoStop();
+      autoStopTimer = setTimeout(() => {
+        stopAndAssess().catch((e) => {
+          console.error(e);
+          micRecording = false;
+          refreshLocks();
+          setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
+        });
+      }, 3500);
+
     } catch (e) {
       console.error(e);
-      clearAutoStop();
-      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
+      try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+      autoStopTimer = null;
       micRecording = false;
       stopAllAudioStates();
-      btnSpeak.disabled = false;
-      btnSpeak.textContent = "Ich spreche";
       refreshLocks();
-    } finally {
-      btnSpeak.disabled = false;
-      refreshLocks();
+      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
     }
   };
 
@@ -615,7 +594,7 @@ function renderLearnPhase(block) {
   };
 }
 
-// ----------------- Phase 2 -----------------
+// ----------------- Phase 2 (Tippen) -----------------
 function renderShufflePhase(block) {
   stopAllAudioStates();
   const blockNo = currentBlockIndex + 1;
@@ -697,7 +676,7 @@ function renderShufflePhase(block) {
   });
 }
 
-// ----------------- Phase 3 -----------------
+// ----------------- Phase 3 (Global Quiz) -----------------
 function renderGlobalQuizPhase() {
   stopAllAudioStates();
 
@@ -781,7 +760,7 @@ function renderGlobalQuizPhase() {
   });
 }
 
-// ----------------- Phase 4 -----------------
+// ----------------- Phase 4 (Sätze) -----------------
 function renderSentencePhase() {
   stopAllAudioStates();
 
@@ -790,6 +769,9 @@ function renderSentencePhase() {
   }
 
   const s = sentenceList[sentenceIndex];
+
+  // Reset Failcounter pro Satz
+  currentFailCount = 0;
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
@@ -810,9 +792,10 @@ function renderSentencePhase() {
         <button id="btn-hear-slow" class="btn secondary">Langsam</button>
       </div>
 
-      <div class="controls-speak">
-        <button id="btn-speak" class="btn mic">${micRecording ? "Stop" : "Ich spreche"}</button>
-        <div id="speak-feedback" class="feedback"></div>
+      <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <button id="btn-speak" class="btn mic">Ich spreche</button>
+        <button id="btn-skip" class="btn secondary" disabled>Später</button>
+        <div id="speak-feedback" class="feedback" style="flex-basis:100%;"></div>
       </div>
 
       <div class="controls-nav">
@@ -824,6 +807,7 @@ function renderSentencePhase() {
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
+  const btnSkip = document.getElementById("btn-skip");
   const btnNext = document.getElementById("btn-next");
 
   const localRefresh = () => {
@@ -831,7 +815,7 @@ function renderSentencePhase() {
     const tts = ttsActive;
     btnHear.disabled = rec || tts;
     btnHearSlow.disabled = rec || tts;
-    btnSpeak.disabled = tts;
+    btnSpeak.disabled = rec || tts;
   };
   setUiRefreshLocks(localRefresh);
   localRefresh();
@@ -839,9 +823,14 @@ function renderSentencePhase() {
   btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(s.text, 1.0); };
   btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(s.text, 0.7); };
 
-  btnNext.disabled = true;
+  btnSkip.onclick = () => {
+    setSpeakFeedback("Wir kommen später zurück.", null);
+    btnNext.disabled = false;
+  };
 
   btnSpeak.onclick = async () => {
+    if (micRecording) return;
+
     const clearAutoStop = () => {
       try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
       autoStopTimer = null;
@@ -851,77 +840,75 @@ function renderSentencePhase() {
       if (!micRecording) return;
 
       clearAutoStop();
-      btnSpeak.disabled = true;
       setSpeakFeedback("Verarbeite…", null);
 
       const recognizedText = await stopBrowserASR();
       const res = scoreSpeech(s.text, recognizedText);
 
       micRecording = false;
-      btnSpeak.textContent = "Ich spreche";
+      refreshLocks();
+
+      if (!res.pass) {
+        currentFailCount++;
+      }
+
+      if (currentFailCount >= FAILS_FOR_SKIP) {
+        btnSkip.disabled = false;
+      }
 
       btnNext.disabled = !res.pass;
 
       setSpeakFeedback(
         `Aussprache: ${res.overall}% (${res.grade})` +
         (recognizedText ? ` · Erkannt: „${recognizedText}“` : " · Erkannt: (leer)") +
-        (res.pass ? ` · Weiter` : ` · Nochmal (ab ${PASS_THRESHOLD}%)`),
+        (res.pass ? ` · Weiter` : ` · Nochmal (ab ${PASS_THRESHOLD}%) (${currentFailCount}/${FAILS_FOR_SKIP})`),
         res.pass
       );
-
-      btnSpeak.disabled = false;
-      refreshLocks();
     };
 
     try {
-      if (!micRecording) {
-        stopAllAudioStates();
+      stopAllAudioStates();
 
-        if (!speechRecAvailable()) {
-          setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
-          return;
-        }
-
-        setSpeakFeedback("Sprich jetzt 2–4 Sekunden. Dann Stop drücken.", null);
-        btnNext.disabled = true;
-
-        try { window.speechSynthesis.cancel(); } catch {}
-        ttsActive = false;
-        refreshLocks();
-        await sleep(150);
-
-        const started = startBrowserASR("fr-FR");
-        if (!started) {
-          setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
-          return;
-        }
-
-        micRecording = true;
-        btnSpeak.textContent = "Stop";
-        refreshLocks();
-
-        clearAutoStop();
-        autoStopTimer = setTimeout(() => {
-          stopAndAssess().catch((e) => {
-            console.error(e);
-            setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
-          });
-        }, 4500);
-      } else {
-        await stopAndAssess();
+      if (!speechRecAvailable()) {
+        setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
+        return;
       }
+
+      setSpeakFeedback("Sprich jetzt. Die Aufnahme stoppt automatisch.", null);
+      btnNext.disabled = true;
+
+      try { window.speechSynthesis.cancel(); } catch {}
+      ttsActive = false;
+      refreshLocks();
+      await sleep(150);
+
+      const started = startBrowserASR("fr-FR");
+      if (!started) {
+        setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
+        return;
+      }
+
+      micRecording = true;
+      refreshLocks();
+
+      clearAutoStop();
+      autoStopTimer = setTimeout(() => {
+        stopAndAssess().catch((e) => {
+          console.error(e);
+          micRecording = false;
+          refreshLocks();
+          setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
+        });
+      }, 4500);
+
     } catch (e) {
       console.error(e);
-      clearAutoStop();
-      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
+      try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+      autoStopTimer = null;
       micRecording = false;
       stopAllAudioStates();
-      btnSpeak.disabled = false;
-      btnSpeak.textContent = "Ich spreche";
       refreshLocks();
-    } finally {
-      btnSpeak.disabled = false;
-      refreshLocks();
+      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
     }
   };
 
@@ -974,7 +961,7 @@ function initTTS() {
 function speakWord(text, rate = 1.0) {
   if (!ttsSupported) return;
   if (!text) return;
-  if (micRecording) return;   // Verriegelung: keine TTS während Aufnahme
+  if (micRecording) return; // Verriegelung: keine TTS während Aufnahme
 
   try {
     window.speechSynthesis.cancel();
@@ -1019,6 +1006,7 @@ function stopAllAudioStates() {
     try { _sr.stop(); } catch {}
     _sr = null;
   }
+
   micRecording = false;
 
   try { window.speechSynthesis?.cancel?.(); } catch {}
