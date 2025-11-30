@@ -1,93 +1,148 @@
 // netlify/functions/pronounce.js
-// Browser -> Netlify Function (same-origin) -> Koyeb /pronounce (server-to-server)
+
+const fetchFn = global.fetch || require("node-fetch");
+
+function cors(origin) {
+  // bei Bedarf Domains ergänzen
+  const allow = origin || "*";
+  return {
+    "Access-Control-Allow-Origin": allow,
+    "Access-Control-Allow-Headers": "Content-Type, x-pronounce-secret",
+    "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  };
+}
+
+function pickEnv(...names) {
+  for (const n of names) {
+    const v = process.env[n];
+    if (v && String(v).trim()) return String(v).trim();
+  }
+  return "";
+}
 
 exports.handler = async (event) => {
-  const origin = event.headers?.origin || "*";
-
-  const headersBase = {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Headers": "Content-Type, x-pronounce-secret",
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Max-Age": "86400"
-  };
-
-  // Preflight
-  if (event.httpMethod === "OPTIONS") {
-    return { statusCode: 204, headers: headersBase, body: "" };
-  }
-
-  // Simple health check in browser (NO 404 confusion)
-  if (event.httpMethod === "GET") {
-    const hasKoyeb = !!process.env.KOYEB_PRONOUNCE_URL;
-    const hasSecret = !!process.env.PRONOUNCE_SECRET;
-    return {
-      statusCode: 200,
-      headers: { ...headersBase, "Content-Type": "application/json" },
-      body: JSON.stringify({ ok: true, service: "pronounce", hasKoyeb, hasSecret })
-    };
-  }
-
-  if (event.httpMethod !== "POST") {
-    return {
-      statusCode: 405,
-      headers: { ...headersBase, "Content-Type": "application/json" },
-      body: JSON.stringify({ ok: false, error: "Method Not Allowed" })
-    };
-  }
+  const origin = event.headers?.origin || "";
+  const baseHeaders = { ...cors(origin), "content-type": "application/json; charset=utf-8" };
 
   try {
-    const KOYEB_URL = process.env.KOYEB_PRONOUNCE_URL; // https://...koyeb.app/pronounce
-    const SECRET = process.env.PRONOUNCE_SECRET;       // set in Netlify env vars
+    if (event.httpMethod === "OPTIONS") {
+      return { statusCode: 204, headers: baseHeaders, body: "" };
+    }
 
-    if (!KOYEB_URL) {
+    const KOYEB_BASE = pickEnv(
+      "KOYEB_PRONOUNCE_URL",      // empfohlen
+      "PRONOUNCE_KOYEB_URL",
+      "KOYEB_URL",
+      "PRONOUNCE_UPSTREAM_URL"
+    );
+
+    const SECRET = pickEnv(
+      "PRONOUNCE_SECRET",         // empfohlen
+      "X_PRONOUNCE_SECRET",
+      "PRONOUNCE_PROXY_SECRET"
+    );
+
+    if (event.httpMethod === "GET") {
       return {
-        statusCode: 500,
-        headers: { ...headersBase, "Content-Type": "application/json" },
-        body: JSON.stringify({ ok: false, error: "Missing env: KOYEB_PRONOUNCE_URL" })
+        statusCode: 200,
+        headers: baseHeaders,
+        body: JSON.stringify({
+          ok: true,
+          service: "pronounce",
+          hasKoyeb: !!KOYEB_BASE,
+          hasSecret: !!SECRET,
+        }),
       };
+    }
+
+    if (event.httpMethod !== "POST") {
+      return { statusCode: 405, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Method not allowed" }) };
+    }
+
+    if (!KOYEB_BASE) {
+      return { statusCode: 500, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Missing env KOYEB_PRONOUNCE_URL" }) };
     }
     if (!SECRET) {
-      return {
-        statusCode: 500,
-        headers: { ...headersBase, "Content-Type": "application/json" },
-        body: JSON.stringify({ ok: false, error: "Missing env: PRONOUNCE_SECRET" })
-      };
+      return { statusCode: 500, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Missing env PRONOUNCE_SECRET" }) };
     }
 
-    let body = {};
+    // Body robust lesen (falls Netlify base64-encodet liefert)
+    let bodyText = event.body || "";
+    if (event.isBase64Encoded) {
+      bodyText = Buffer.from(bodyText, "base64").toString("utf8");
+    }
+
+    let data;
     try {
-      body = event.body ? JSON.parse(event.body) : {};
-    } catch {
+      data = JSON.parse(bodyText || "{}");
+    } catch (e) {
+      console.log("[PRONOUNCE_FN] JSON parse failed:", String(e));
+      return { statusCode: 400, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Invalid JSON body" }) };
+    }
+
+    const { targetText, language, audioBase64, enableMiscue } = data || {};
+
+    // Minimal-Validierung
+    if (!targetText || !language || !audioBase64) {
       return {
         statusCode: 400,
-        headers: { ...headersBase, "Content-Type": "application/json" },
-        body: JSON.stringify({ ok: false, error: "Invalid JSON body" })
+        headers: baseHeaders,
+        body: JSON.stringify({ ok: false, error: "Missing targetText/language/audioBase64" }),
       };
     }
 
-    const resp = await fetch(KOYEB_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-pronounce-secret": SECRET
-      },
-      body: JSON.stringify(body)
-    });
+    const upstreamUrl = KOYEB_BASE.replace(/\/$/, "") + "/pronounce";
 
-    const text = await resp.text();
+    // Timeout, damit Funktionen nicht “hängen”
+    const controller = new AbortController();
+    const t = setTimeout(() => controller.abort(), 25000);
+
+    let r, txt, ct;
+    try {
+      console.log("[PRONOUNCE_FN] → Upstream:", upstreamUrl, "| b64.len:", String(audioBase64).length);
+
+      r = await fetchFn(upstreamUrl, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-pronounce-secret": SECRET,
+        },
+        body: JSON.stringify({ targetText, language, audioBase64, enableMiscue: !!enableMiscue }),
+        signal: controller.signal,
+      });
+
+      ct = r.headers.get("content-type") || "";
+      txt = await r.text();
+
+      console.log("[PRONOUNCE_FN] Upstream status:", r.status, "| ct:", ct);
+      console.log("[PRONOUNCE_FN] Upstream body head:", (txt || "").slice(0, 800));
+    } catch (e) {
+      console.log("[PRONOUNCE_FN] Upstream fetch failed:", String(e));
+      return {
+        statusCode: 503,
+        headers: baseHeaders,
+        body: JSON.stringify({ ok: false, error: "Upstream fetch failed", detail: String(e) }),
+      };
+    } finally {
+      clearTimeout(t);
+    }
+
+    // Upstream Antwort 1:1 durchreichen
     return {
-      statusCode: resp.status,
+      statusCode: r.status,
       headers: {
-        ...headersBase,
-        "Content-Type": resp.headers.get("content-type") || "application/json"
+        ...baseHeaders,
+        "content-type": ct || "application/json; charset=utf-8",
       },
-      body: text
+      body: txt || "",
     };
   } catch (e) {
+    console.log("[PRONOUNCE_FN] Unhandled error:", String(e));
+    // Ganz wichtig: auch hier JSON statt Netlify-HTML-502
     return {
       statusCode: 500,
-      headers: { ...headersBase, "Content-Type": "application/json" },
-      body: JSON.stringify({ ok: false, error: String(e?.message || e) })
+      headers: baseHeaders,
+      body: JSON.stringify({ ok: false, error: "Function crashed", detail: String(e) }),
     };
   }
 };
