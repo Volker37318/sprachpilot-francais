@@ -1,9 +1,7 @@
 // netlify/functions/pronounce.js
 
-const fetchFn = global.fetch || require("node-fetch");
-
 function cors(origin) {
-  // bei Bedarf Domains ergänzen
+  // Wenn du später einschränken willst: hier eine Allowlist bauen
   const allow = origin || "*";
   return {
     "Access-Control-Allow-Origin": allow,
@@ -20,8 +18,13 @@ function pickEnv(...names) {
   return "";
 }
 
+function header(event, name) {
+  const h = event?.headers || {};
+  return h[name] || h[name.toLowerCase()] || h[name.toUpperCase()] || "";
+}
+
 exports.handler = async (event) => {
-  const origin = event.headers?.origin || "";
+  const origin = header(event, "origin");
   const baseHeaders = { ...cors(origin), "content-type": "application/json; charset=utf-8" };
 
   try {
@@ -30,18 +33,19 @@ exports.handler = async (event) => {
     }
 
     const KOYEB_BASE = pickEnv(
-      "KOYEB_PRONOUNCE_URL",      // empfohlen
+      "KOYEB_PRONOUNCE_URL",
       "PRONOUNCE_KOYEB_URL",
       "KOYEB_URL",
       "PRONOUNCE_UPSTREAM_URL"
     );
 
     const SECRET = pickEnv(
-      "PRONOUNCE_SECRET",         // empfohlen
+      "PRONOUNCE_SECRET",
       "X_PRONOUNCE_SECRET",
       "PRONOUNCE_PROXY_SECRET"
     );
 
+    // Health/Ready Check
     if (event.httpMethod === "GET") {
       return {
         statusCode: 200,
@@ -56,17 +60,29 @@ exports.handler = async (event) => {
     }
 
     if (event.httpMethod !== "POST") {
-      return { statusCode: 405, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Method not allowed" }) };
+      return {
+        statusCode: 405,
+        headers: baseHeaders,
+        body: JSON.stringify({ ok: false, error: "Method not allowed" }),
+      };
     }
 
     if (!KOYEB_BASE) {
-      return { statusCode: 500, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Missing env KOYEB_PRONOUNCE_URL" }) };
+      return {
+        statusCode: 500,
+        headers: baseHeaders,
+        body: JSON.stringify({ ok: false, error: "Missing env KOYEB_PRONOUNCE_URL" }),
+      };
     }
     if (!SECRET) {
-      return { statusCode: 500, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Missing env PRONOUNCE_SECRET" }) };
+      return {
+        statusCode: 500,
+        headers: baseHeaders,
+        body: JSON.stringify({ ok: false, error: "Missing env PRONOUNCE_SECRET" }),
+      };
     }
 
-    // Body robust lesen (falls Netlify base64-encodet liefert)
+    // Body robust lesen (Netlify kann base64-encodet liefern)
     let bodyText = event.body || "";
     if (event.isBase64Encoded) {
       bodyText = Buffer.from(bodyText, "base64").toString("utf8");
@@ -77,12 +93,14 @@ exports.handler = async (event) => {
       data = JSON.parse(bodyText || "{}");
     } catch (e) {
       console.log("[PRONOUNCE_FN] JSON parse failed:", String(e));
-      return { statusCode: 400, headers: baseHeaders, body: JSON.stringify({ ok: false, error: "Invalid JSON body" }) };
+      return {
+        statusCode: 400,
+        headers: baseHeaders,
+        body: JSON.stringify({ ok: false, error: "Invalid JSON body" }),
+      };
     }
 
     const { targetText, language, audioBase64, enableMiscue } = data || {};
-
-    // Minimal-Validierung
     if (!targetText || !language || !audioBase64) {
       return {
         statusCode: 400,
@@ -93,7 +111,7 @@ exports.handler = async (event) => {
 
     const upstreamUrl = KOYEB_BASE.replace(/\/$/, "") + "/pronounce";
 
-    // Timeout, damit Funktionen nicht “hängen”
+    // Timeout
     const controller = new AbortController();
     const t = setTimeout(() => controller.abort(), 25000);
 
@@ -101,7 +119,7 @@ exports.handler = async (event) => {
     try {
       console.log("[PRONOUNCE_FN] → Upstream:", upstreamUrl, "| b64.len:", String(audioBase64).length);
 
-      r = await fetchFn(upstreamUrl, {
+      r = await fetch(upstreamUrl, {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -127,18 +145,14 @@ exports.handler = async (event) => {
       clearTimeout(t);
     }
 
-    // Upstream Antwort 1:1 durchreichen
+    // Upstream-Antwort 1:1 durchreichen
     return {
       statusCode: r.status,
-      headers: {
-        ...baseHeaders,
-        "content-type": ct || "application/json; charset=utf-8",
-      },
+      headers: { ...baseHeaders, "content-type": ct || "application/json; charset=utf-8" },
       body: txt || "",
     };
   } catch (e) {
     console.log("[PRONOUNCE_FN] Unhandled error:", String(e));
-    // Ganz wichtig: auch hier JSON statt Netlify-HTML-502
     return {
       statusCode: 500,
       headers: baseHeaders,
