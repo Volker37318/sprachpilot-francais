@@ -71,10 +71,13 @@ function refreshLocks() { try { _uiRefreshLocks && _uiRefreshLocks(); } catch {}
 
 const ARTICLES = new Set(["le", "la", "les", "un", "une", "des", "du", "de", "d", "l"]);
 
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
 // ----------------- WORD → IMAGE (HARDCODED) -----------------
 
 function wordKeyForMap(raw) {
-  // robust: lower + Diacritics entfernen (écouter == ecouter) + Sonderzeichen raus
   return String(raw || "")
     .toLowerCase()
     .normalize("NFD")
@@ -96,8 +99,12 @@ function mapKeyFromPhrase(wordOrPhrase) {
   while (start < parts.length && ARTICLES.has(parts[start])) start++;
 
   const core = parts.slice(start);
-  if (core.length) return core[core.length - 1]; // letztes Kernwort (z.B. "livre", "page", "tache")
-  return parts[parts.length - 1];
+  if (core.length) {
+    // letztes Kernwort, aber falls Zahl dran hängt: entfernen
+    const last = core[core.length - 1].replace(/[0-9]+$/g, "");
+    return last || core[core.length - 1];
+  }
+  return parts[parts.length - 1].replace(/[0-9]+$/g, "");
 }
 
 const WORD_TO_IMAGE_FILE = {
@@ -133,10 +140,6 @@ function attachImgFallbacks() {
       if (fb) img.src = fb;
     };
   });
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
 }
 
 // ----------------- LOCAL ASR (Browser SpeechRecognition) -----------------
@@ -210,7 +213,7 @@ function stopBrowserASR() {
   });
 }
 
-// --- Scoring ---
+// ----------------- SCORING -----------------
 function _norm(s) {
   return String(s || "")
     .toLowerCase()
@@ -231,6 +234,36 @@ function _tokensNoArticles(s) {
 
 function _joinNoArticles(s) {
   return _tokensNoArticles(s).join(" ").trim();
+}
+
+// WICHTIGER FIX: Imperativ/Grundform als gleich behandeln.
+// Chrome erkennt Befehle oft als Infinitiv (fermer/ouvrir/trouver...) statt "ferme/ouvre/trouve".
+const FR_VERB_LEMMA = {
+  // écouter
+  ecoute: "ecouter", ecouter: "ecouter",
+  // répéter
+  repete: "repeter", repeter: "repeter",
+  // lire
+  lis: "lire", lire: "lire",
+  // écrire
+  ecris: "ecrire", ecrire: "ecrire",
+  // voir
+  vois: "voir", voir: "voir",
+  // ouvrir
+  ouvre: "ouvrir", ouvrir: "ouvrir", ouvert: "ouvrir",
+  // fermer
+  ferme: "fermer", fermer: "fermer",
+  // trouver
+  trouve: "trouver", trouver: "trouver"
+};
+
+function canonicalFrenchForScoring(s) {
+  const toks = _tokensNoArticles(s);
+  if (!toks.length) return "";
+  const out = [...toks];
+  // erste Position (Verb) lemmatisieren, wenn bekannt
+  out[0] = FR_VERB_LEMMA[out[0]] || out[0];
+  return out.join(" ").trim();
 }
 
 function _levenshtein(a, b) {
@@ -265,32 +298,31 @@ function _charSimilarity(target, heard) {
 }
 
 function _tokenSimilarity(target, heard) {
-  const A = _tokensNoArticles(target);
-  const B = _tokensNoArticles(heard);
+  const A = _norm(target).split(" ").filter(Boolean);
+  const B = _norm(heard).split(" ").filter(Boolean);
   if (!A.length || !B.length) return 0;
 
   const setB = new Set(B);
   let common = 0;
   for (const t of A) if (setB.has(t)) common++;
 
-  // Anteil gemeinsamer Wörter bezogen auf längere Seite (nicht so hart)
   const denom = Math.max(A.length, B.length) || 1;
   return common / denom;
 }
 
 function scoreSpeech(target, heard) {
-  const exactLoose =
-    _joinNoArticles(target) &&
-    (_joinNoArticles(target) === _joinNoArticles(heard));
+  // 1) Canonical-Form (ohne Artikel, Verb lemmatisiert)
+  const tCan = canonicalFrenchForScoring(target);
+  const hCan = canonicalFrenchForScoring(heard);
 
-  if (exactLoose) {
+  // Exakt in Canonical => 100%
+  if (tCan && hCan && tCan === hCan) {
     return { overall: 100, grade: "excellent", pass: true, exactLoose: true };
   }
 
-  const cs = _charSimilarity(target, heard);
-  const ts = _tokenSimilarity(target, heard);
-
-  // Hybrid: char 70%, tokens 30%
+  // 2) Hybrid-Score auf Canonical-Form (stabiler)
+  const cs = _charSimilarity(tCan || target, hCan || heard);
+  const ts = _tokenSimilarity(tCan || target, hCan || heard);
   const sim = (0.7 * cs) + (0.3 * ts);
   const overall = Math.max(0, Math.min(100, Math.round(sim * 100)));
 
@@ -308,8 +340,8 @@ initTTS();
 loadLesson(TARGET_LANG, LESSON_ID)
   .then((data) => {
     lesson = data;
-    buildQuizPoolFromLesson();   // 12 Wörter aus der Lektion + Bildmapping
-    buildSentenceList();         // stabile Satzliste + deutsche Hinweise
+    buildQuizPoolFromLesson();
+    buildSentenceList();
     startLesson();
   })
   .catch((err) => {
@@ -362,7 +394,6 @@ function buildQuizPoolFromLesson() {
     if (quizPool.length >= 12) break;
   }
 
-  // falls etwas fehlt: über Mapping auffüllen
   if (quizPool.length < 12) {
     const existing = new Set(quizPool.map(x => mapKeyFromPhrase(x.word)));
     for (const [k, file] of Object.entries(WORD_TO_IMAGE_FILE)) {
@@ -382,7 +413,6 @@ function buildQuizPoolFromLesson() {
 
 // ----------------- SENTENCES (Phase 4) -----------------
 function buildSentenceList() {
-  // Welche Kernwörter haben wir?
   const seen = new Set((quizPool || []).map(x => mapKeyFromPhrase(x.word)).filter(Boolean));
   const has = (k) => seen.has(k);
 
@@ -399,7 +429,6 @@ function buildSentenceList() {
   if (has("ouvrir") && has("page"))    list.push({ text: "Ouvre la page.", de: "Öffne die Seite." });
   if (has("fermer") && has("page"))    list.push({ text: "Ferme la page.", de: "Schließe die Seite." });
 
-  // Falls (warum auch immer) zu wenig: zumindest 6 Sätze garantieren
   if (list.length < 6) {
     const fallback = [
       { text: "Écoute.", de: "Hör zu." },
@@ -477,7 +506,6 @@ function renderLearnPhase(block) {
     const tts = ttsActive;
     btnHear.disabled = rec || tts;
     btnHearSlow.disabled = rec || tts;
-    // Mic sperren während TTS spricht
     btnSpeak.disabled = tts;
   };
   setUiRefreshLocks(localRefresh);
@@ -529,11 +557,9 @@ function renderLearnPhase(block) {
           return;
         }
 
-        // Verriegelung: während Aufnahme keine TTS-Buttons
         setSpeakFeedback("Sprich jetzt 2–3 Sekunden. Dann Stop drücken.", null);
         btnNext.disabled = true;
 
-        // WICHTIG: TTS wirklich stoppen + kurzer Delay, damit nichts reingezogen wird
         try { window.speechSynthesis.cancel(); } catch {}
         ttsActive = false;
         refreshLocks();
@@ -582,7 +608,6 @@ function renderLearnPhase(block) {
       return render();
     }
 
-    // Phase 1 fertig -> Phase 2
     currentPhase = "shuffle";
     currentItemIndex = 0;
     shuffleOrder = shuffleArray([...block.items]);
@@ -590,10 +615,9 @@ function renderLearnPhase(block) {
   };
 }
 
-// ----------------- Phase 2 (Tippen 4er Pack, BILDER EXAKT nach Wort) -----------------
+// ----------------- Phase 2 -----------------
 function renderShufflePhase(block) {
   stopAllAudioStates();
-
   const blockNo = currentBlockIndex + 1;
 
   if (!shuffleOrder || shuffleOrder.length !== block.items.length) {
@@ -601,7 +625,6 @@ function renderShufflePhase(block) {
   }
 
   if (currentItemIndex >= shuffleOrder.length) {
-    // Block-Phase2 fertig -> nächster Block oder globales Quiz
     if (currentBlockIndex < lesson.blocks.length - 1 && currentBlockIndex < 2) {
       currentBlockIndex++;
       currentPhase = "learn";
@@ -632,7 +655,6 @@ function renderShufflePhase(block) {
 
       <div class="icon-grid">
         ${gridItems.map((it) => {
-          // FIX: Mapping funktioniert jetzt auch bei "le livre", "la page", "la tâche" etc.
           const mapped = imageSrcForWord(it.word);
           const src = mapped || (it.image || "");
           const fb = it.image || "";
@@ -662,7 +684,7 @@ function renderShufflePhase(block) {
   appEl.querySelectorAll(".icon-card").forEach((btn) => {
     btn.onclick = () => {
       const w = btn.getAttribute("data-word") || "";
-      if (_joinNoArticles(w) !== _joinNoArticles(target.word)) {
+      if (canonicalFrenchForScoring(w) !== canonicalFrenchForScoring(target.word)) {
         feedbackEl.textContent = "Falsch. Tippe ein anderes Bild.";
         return;
       }
@@ -675,7 +697,7 @@ function renderShufflePhase(block) {
   });
 }
 
-// ----------------- Phase 3 (Global Hör-Quiz, 12 Bilder, 4er Pack, ohne Beschriftung) -----------------
+// ----------------- Phase 3 -----------------
 function renderGlobalQuizPhase() {
   stopAllAudioStates();
 
@@ -759,7 +781,7 @@ function renderGlobalQuizPhase() {
   });
 }
 
-// ----------------- Phase 4 (Sätze nachsprechen, Score ≥ 85%, mit DE Hinweis) -----------------
+// ----------------- Phase 4 -----------------
 function renderSentencePhase() {
   stopAllAudioStates();
 
@@ -863,7 +885,6 @@ function renderSentencePhase() {
         setSpeakFeedback("Sprich jetzt 2–4 Sekunden. Dann Stop drücken.", null);
         btnNext.disabled = true;
 
-        // TTS stoppen + kurzer Delay
         try { window.speechSynthesis.cancel(); } catch {}
         ttsActive = false;
         refreshLocks();
@@ -927,7 +948,7 @@ function renderEndScreen() {
 // ----------------- TTS -----------------
 function initTTS() {
   if (!ttsSupported) {
-    status("⚠️ Sprachausgabe wird von diesem Browser nicht unterstützt.");
+    status("Sprachausgabe wird von diesem Browser nicht unterstützt.");
     return;
   }
 
@@ -956,7 +977,6 @@ function speakWord(text, rate = 1.0) {
   if (micRecording) return;   // Verriegelung: keine TTS während Aufnahme
 
   try {
-    // laufende TTS stoppen
     window.speechSynthesis.cancel();
 
     const utter = new SpeechSynthesisUtterance(text);
