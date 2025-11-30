@@ -1,20 +1,26 @@
 // src/app.js – Vor-A1 / Klassensprache Französisch
-// Flow: Lernen → Bilder & Tippen → Hör-Quiz
-// Aussprache-Check (OHNE SERVER): Browser-Spracherkennung + Text-Score
-// Weiter nur ab 85% (grün).
-// Quiz-Bilder: /assets/<block>-<pos>.png (z.B. /assets/1-1.png ... /assets/1-4.png)
+// Flow (NEU):
+// Block 1: Phase 1 (Lernen + Aussprache) → Phase 2 (Bilder tippen, 4er Pack)
+// Block 2: Phase 1 → Phase 2
+// Block 3: Phase 1 → Phase 2
+// Danach: Phase 3 (Globales Hör-Quiz: 12 Bilder Pool, immer 4er Pack, ohne Beschriftung)
+// Danach: Phase 4 (Satz-Übung: Sätze aus gelernten Wörtern, nachsprechen, Score ≥85% zum Weiter)
+// Danach: Ende
+//
+// Bilder liegen unter: assets/images/W1D1/bild1-1.png, bild1-2.png ... bild3-4.png
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
 
-// (Server-URL bleibt drin, wird im Browser-Mode nicht benutzt)
-const PRONOUNCE_URL_DEFAULT = "/.netlify/functions/pronounce";
-
-// >>> Schalter: lokal ohne Koyeb
-const PRONOUNCE_MODE = "browser"; // "browser" | "server"
-
+const PRONOUNCE_MODE = "browser"; // "browser" | "server" (server bleibt drin, wird nicht genutzt)
 const PASS_THRESHOLD = 85;
-const QUIZ_IMAGE_BASE = "/assets/";
+
+// Deine echte Struktur:
+const IMAGE_DIR = `assets/images/${LESSON_ID}/`; // -> /assets/images/W1D1/...
+
+// Global-Quiz: 3 Übungen * 4 Bilder = 12
+const QUIZ_BLOCKS = 3;
+const QUIZ_ITEMS_PER_BLOCK = 4;
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -24,22 +30,31 @@ const status = (msg) => {
 };
 
 let lesson = null;
-let currentBlockIndex = 0;
-let currentPhase = "learn"; // 'learn' | 'shuffle' | 'quiz'
-let currentItemIndex = 0;
 
+// Block-Flow
+let currentBlockIndex = 0; // 0-based
+let currentPhase = "learn"; // "learn" | "shuffle" | "quiz" | "sentences"
+let currentItemIndex = 0;   // Index innerhalb Phase (Learn: Wort-Index, Shuffle: Aufgabe-Index)
+
+// Phase 2: Ziel-Reihenfolge pro Block
+let shuffleOrder = []; // array of items (block.items) in random order
+
+// Phase 3: Global Quiz
+let quizPool = [];          // 12 Items (blockNo,pos,word,id)
+let quizTargetOrder = [];   // shuffled quizPool
+let quizIndex = 0;
 let quizAttemptsLeft = 3;
 
-// Reihenfolgen pro Block/Phase (damit es NICHT 1-2-3-4 wird)
-let shuffleOrder = []; // Reihenfolge der Zielwörter in Phase 2
-let quizOrder = [];    // Reihenfolge der Zielwörter in Phase 3
+// Phase 4: Sätze
+let sentenceList = [];
+let sentenceIndex = 0;
 
-// TTS-Setup
+// TTS
 let ttsSupported = "speechSynthesis" in window;
 let ttsVoices = [];
 let ttsVoice = null;
 
-// Mic / Pronounce state
+// ASR state
 let micRecording = false;
 let autoStopTimer = null;
 
@@ -73,9 +88,7 @@ function startBrowserASR(lang = "fr-FR") {
     if (add.trim()) _srFinal = (_srFinal + " " + add).trim();
   };
 
-  _sr.onerror = (e) => {
-    console.warn("[PRONOUNCE][ASR] error:", e?.error || e);
-  };
+  _sr.onerror = (e) => console.warn("[ASR] error:", e?.error || e);
 
   _sr.onend = () => {
     try {
@@ -93,7 +106,7 @@ function startBrowserASR(lang = "fr-FR") {
     _sr.start();
     return true;
   } catch (e) {
-    console.warn("[PRONOUNCE][ASR] start failed:", e);
+    console.warn("[ASR] start failed:", e);
     _sr = null;
     return false;
   }
@@ -107,7 +120,7 @@ function stopBrowserASR() {
   });
 }
 
-// --- simple scoring (Text-Ähnlichkeit) ---
+// --- scoring ---
 function _norm(s) {
   return String(s || "")
     .toLowerCase()
@@ -154,29 +167,14 @@ function _grade(score) {
          score >= 60 ? "ok" : "try_again";
 }
 
-// ---- Self-check (nur wenn server) ----
-(async function pingPronounceProxy() {
-  if (PRONOUNCE_MODE !== "server") {
-    console.log("[PRONOUNCE] Local mode (browser ASR) active.");
-    return;
-  }
-  try {
-    const r = await fetch(PRONOUNCE_URL_DEFAULT, { cache: "no-store" });
-    const t = await r.text();
-    if (r.ok) console.log("[PRONOUNCE] Proxy ready.", t);
-    else console.warn("[PRONOUNCE] Proxy not ready:", r.status, t);
-  } catch (e) {
-    console.warn("[PRONOUNCE] Proxy ping failed:", e);
-  }
-})();
-
-// TTS initialisieren
+// ----------------- INIT -----------------
 initTTS();
 
-// Einstieg: Lesson laden
 loadLesson(TARGET_LANG, LESSON_ID)
   .then((data) => {
     lesson = data;
+    buildGlobalQuizPool();     // 12 Bilder vorbereiten
+    buildSentenceListSimple(); // Sätze vorbereiten
     startLesson();
   })
   .catch((err) => {
@@ -185,95 +183,152 @@ loadLesson(TARGET_LANG, LESSON_ID)
     status(err.message);
   });
 
-// ----------------- Daten laden -----------------
-
 async function loadLesson(lang, lessonId) {
   const res = await fetch(`lessons/${lang}/${lessonId}.json`);
   if (!res.ok) throw new Error(`Konnte Lektion nicht laden: ${res.status}`);
   return await res.json();
 }
 
-// ----------------- State-Steuerung -----------------
-
 function startLesson() {
   currentBlockIndex = 0;
-  startBlock(0);
-}
-
-function startBlock(index) {
-  stopMicIfNeeded();
-  currentBlockIndex = index;
   currentPhase = "learn";
   currentItemIndex = 0;
-  quizAttemptsLeft = 3;
-
-  // Orders für den neuen Block zurücksetzen
   shuffleOrder = [];
-  quizOrder = [];
-
+  quizIndex = 0;
+  quizAttemptsLeft = 3;
+  sentenceIndex = 0;
   render();
 }
 
-function nextPhaseOrBlock() {
-  stopMicIfNeeded();
-  const blocks = lesson.blocks;
+// ----------------- IMAGE PATHS -----------------
+function getBlockImagePath(blockNo1based, pos1based) {
+  // assets/images/W1D1/bild1-1.png
+  return `${IMAGE_DIR}bild${blockNo1based}-${pos1based}.png`;
+}
 
-  if (currentPhase === "learn") currentPhase = "shuffle";
-  else if (currentPhase === "shuffle") currentPhase = "quiz";
-  else if (currentPhase === "quiz") {
-    if (currentBlockIndex < blocks.length - 1) {
-      startBlock(currentBlockIndex + 1);
-      return;
-    } else {
-      renderEndScreen();
-      return;
+// Fixe Zuordnung: item an Position -> bild<block>-<pos>.png
+function getItemQuizImageSrc(block, blockNo1based, it) {
+  const pos0 = block.items.findIndex((x) => x.id === it.id);
+  const pos1 = Math.max(1, pos0 + 1);
+  return getBlockImagePath(blockNo1based, pos1);
+}
+
+// Optionaler Fallback: wenn Bild nicht existiert, nimm lesson-json image
+function attachImgFallbacks() {
+  appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
+    const fb = img.getAttribute("data-fallback");
+    img.onerror = () => {
+      img.onerror = null;
+      if (fb) img.src = fb;
+    };
+  });
+}
+
+// ----------------- GLOBAL QUIZ POOL (12 Bilder) -----------------
+function buildGlobalQuizPool() {
+  quizPool = [];
+  if (!lesson?.blocks?.length) return;
+
+  const maxBlocks = Math.min(QUIZ_BLOCKS, lesson.blocks.length);
+  for (let b = 0; b < maxBlocks; b++) {
+    const block = lesson.blocks[b];
+    const maxItems = Math.min(QUIZ_ITEMS_PER_BLOCK, block.items.length);
+    for (let i = 0; i < maxItems; i++) {
+      const it = block.items[i];
+      const blockNo = b + 1;
+      const pos = i + 1;
+      quizPool.push({
+        // stabiler key:
+        qid: `b${blockNo}p${pos}`,
+        blockNo,
+        pos,
+        word: it.word,
+        // Bild ist fest:
+        img: getBlockImagePath(blockNo, pos),
+        // Fallback (falls assets fehlen):
+        fallbackImg: it.image || ""
+      });
     }
   }
 
-  currentItemIndex = 0;
-  quizAttemptsLeft = 3;
-
-  // Reihenfolgen pro Phase einmalig festlegen
-  const block = lesson.blocks[currentBlockIndex];
-  if (currentPhase === "shuffle") shuffleOrder = shuffleArray([...block.items]);
-  if (currentPhase === "quiz") quizOrder = shuffleArray([...block.items]);
-
-  render();
+  quizTargetOrder = shuffleArray([...quizPool]);
 }
 
-// ----------------- Rendering -----------------
+// ----------------- SENTENCES (Phase 4) -----------------
+function buildSentenceListSimple() {
+  // Einfache Sätze aus den gelernten Wörtern (aus quizPool = 12 Wörter)
+  // Ziel: leicht lesbar, nur aus bekannten Wörtern + Konnektor "et".
+  const words = (quizPool || []).map(x => x.word).filter(Boolean);
+  const uniq = [];
+  const seen = new Set();
+  for (const w of words) {
+    const k = _norm(w);
+    if (!k || seen.has(k)) continue;
+    seen.add(k);
+    uniq.push(w.trim());
+  }
 
+  // Mindestens 6–10 Sätze erzeugen
+  const out = [];
+
+  // Paar-Sätze: "X et Y."
+  for (let i = 0; i < uniq.length - 1; i += 2) {
+    const a = uniq[i];
+    const b = uniq[i + 1];
+    if (!a || !b) continue;
+    out.push(`${capFirst(a)} et ${b}.`);
+    if (out.length >= 8) break;
+  }
+
+  // Wenn zu wenig: zweite Runde mit anderen Paaren
+  if (out.length < 8) {
+    const shuffled = shuffleArray([...uniq]);
+    for (let i = 0; i < shuffled.length - 1; i += 2) {
+      out.push(`${capFirst(shuffled[i])} et ${shuffled[i + 1]}.`);
+      if (out.length >= 10) break;
+    }
+  }
+
+  // Notfall
+  if (!out.length && uniq.length) out.push(`${capFirst(uniq[0])}.`);
+
+  // Als Liste speichern
+  sentenceList = out.map((s, idx) => ({ sid: `s${idx+1}`, text: s }));
+}
+
+// ----------------- RENDER SWITCH -----------------
 function render() {
   if (!lesson) return;
-  const block = lesson.blocks[currentBlockIndex];
 
-  if (currentPhase === "learn") renderLearnPhase(block);
-  else if (currentPhase === "shuffle") renderShufflePhase(block);
-  else renderQuizPhase(block);
+  if (currentPhase === "learn") {
+    renderLearnPhase(lesson.blocks[currentBlockIndex]);
+    return;
+  }
+  if (currentPhase === "shuffle") {
+    renderShufflePhase(lesson.blocks[currentBlockIndex]);
+    return;
+  }
+  if (currentPhase === "quiz") {
+    renderGlobalQuizPhase();
+    return;
+  }
+  if (currentPhase === "sentences") {
+    renderSentencePhase();
+    return;
+  }
+  renderEndScreen();
 }
 
-// Bildzuordnung: Wort -> feste Bilddatei (z.B. 1-1.png gehört immer zu item #1 im Block)
-function getQuizImageSrc(block, it) {
-  try {
-    const pos = block.items.findIndex((x) => x.id === it.id); // 0..3
-    if (pos >= 0 && pos < 4) {
-      const blockNo = currentBlockIndex + 1; // 1..n
-      return `${QUIZ_IMAGE_BASE}${blockNo}-${pos + 1}.png`;
-    }
-  } catch {}
-  return it.image; // fallback
-}
-
-// ----------------- Phase 1: Lernen (Aussprache prüfen) -----------------
-
+// ----------------- PHASE 1 (Learn + Speak) -----------------
 function renderLearnPhase(block) {
   const item = block.items[currentItemIndex];
+  const blockNo = currentBlockIndex + 1;
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
         <div class="badge">Tag 1 – ${lesson.title || "Französisch"}</div>
-        <div class="badge">Block ${currentBlockIndex + 1} von ${lesson.blocks.length}</div>
+        <div class="badge">Block ${blockNo} von ${lesson.blocks.length}</div>
         <div class="badge">Wort ${currentItemIndex + 1} von ${block.items.length}</div>
       </div>
 
@@ -296,7 +351,7 @@ function renderLearnPhase(block) {
       </div>
 
       <div class="controls-nav">
-        <button id="btn-next-word" class="btn secondary" disabled>Weiter</button>
+        <button id="btn-next" class="btn secondary" disabled>Weiter</button>
       </div>
     </div>
   `;
@@ -304,7 +359,7 @@ function renderLearnPhase(block) {
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
-  const btnNext = document.getElementById("btn-next-word");
+  const btnNext = document.getElementById("btn-next");
 
   btnHear.onclick = () => speakWord(item.word, 1.0);
   btnHearSlow.onclick = () => speakWord(item.word, 0.7);
@@ -324,21 +379,10 @@ function renderLearnPhase(block) {
       btnSpeak.disabled = true;
       setSpeakFeedback("Verarbeite…", null);
 
-      let recognizedText = "";
-      let overallScore = 0;
-
-      if (PRONOUNCE_MODE === "browser") {
-        recognizedText = await stopBrowserASR();
-        const exact = _norm(item.word) && (_norm(item.word) === _norm(recognizedText));
-        const sim = exact ? 1 : _similarityScore(item.word, recognizedText);
-        overallScore = Math.round(sim * 100);
-      } else {
-        const audioDataUrl = await stopMicGetWavDataUrl();
-        const audioBase64 = toPureBase64(audioDataUrl);
-        const result = await callPronounce({ targetText: item.word, language: "fr-FR", audioBase64 });
-        overallScore = result?.overallScore ?? 0;
-        recognizedText = result?.details?.recognizedText || "";
-      }
+      const recognizedText = await stopBrowserASR();
+      const exact = _norm(item.word) && (_norm(item.word) === _norm(recognizedText));
+      const sim = exact ? 1 : _similarityScore(item.word, recognizedText);
+      const overallScore = Math.round(sim * 100);
 
       micRecording = false;
       btnSpeak.textContent = "🎤 Ich spreche";
@@ -360,22 +404,19 @@ function renderLearnPhase(block) {
 
     try {
       if (!micRecording) {
-        stopMicIfNeeded();
+        stopAllAudioStates();
 
-        if (PRONOUNCE_MODE === "browser") {
-          if (!speechRecAvailable()) {
-            setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
-            return;
-          }
-          setSpeakFeedback("Sprich jetzt 2–3 Sekunden. Dann Stop drücken.", null);
-          const started = startBrowserASR("fr-FR");
-          if (!started) {
-            setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
-            return;
-          }
-        } else {
-          setSpeakFeedback("Aufnahme läuft… sprich kurz (2–3 Sekunden). Dann Stop drücken.", null);
-          await startMicWav16k();
+        if (!speechRecAvailable()) {
+          setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
+          return;
+        }
+
+        setSpeakFeedback("Sprich jetzt 2–3 Sekunden. Dann Stop drücken.", null);
+
+        const started = startBrowserASR("fr-FR");
+        if (!started) {
+          setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
+          return;
         }
 
         micRecording = true;
@@ -396,62 +437,82 @@ function renderLearnPhase(block) {
       clearAutoStop();
       setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
       micRecording = false;
-      stopMicIfNeeded();
-      if (btnSpeak) {
-        btnSpeak.disabled = false;
-        btnSpeak.textContent = "🎤 Ich spreche";
-      }
+      stopAllAudioStates();
+      btnSpeak.disabled = false;
+      btnSpeak.textContent = "🎤 Ich spreche";
     } finally {
-      if (btnSpeak) btnSpeak.disabled = false;
+      btnSpeak.disabled = false;
     }
   };
 
   btnNext.onclick = () => {
-    stopMicIfNeeded();
+    stopAllAudioStates();
+
     if (currentItemIndex < block.items.length - 1) {
       currentItemIndex++;
       render();
-    } else {
-      nextPhaseOrBlock();
+      return;
     }
+
+    // Phase 1 fertig -> Phase 2 (nur für diesen Block)
+    currentPhase = "shuffle";
+    currentItemIndex = 0;
+    shuffleOrder = shuffleArray([...block.items]);
+    render();
   };
 }
 
-// ----------------- Phase 2: Bilder & Wörter (4er Pack, Grid jedes Mal neu gemischt) -----------------
-
+// ----------------- PHASE 2 (Block Shuffle / Tippen, 4er Pack) -----------------
 function renderShufflePhase(block) {
-  stopMicIfNeeded();
+  stopAllAudioStates();
 
-  // Reihenfolge der Zielwörter pro Block/Phase EINMAL festlegen
+  const blockNo = currentBlockIndex + 1;
+
   if (!shuffleOrder || shuffleOrder.length !== block.items.length) {
     shuffleOrder = shuffleArray([...block.items]);
   }
 
-  // Wenn fertig: weiter
   if (currentItemIndex >= shuffleOrder.length) {
-    currentItemIndex = 0;
-    nextPhaseOrBlock();
+    // Block-Phase 2 fertig -> nächster Block Phase 1 ODER globales Quiz
+    if (currentBlockIndex < Math.min(QUIZ_BLOCKS, lesson.blocks.length) - 1) {
+      currentBlockIndex++;
+      currentPhase = "learn";
+      currentItemIndex = 0;
+      shuffleOrder = [];
+      render();
+      return;
+    }
+
+    // Alle 3 Blöcke erledigt -> globales Quiz
+    currentPhase = "quiz";
+    quizIndex = 0;
+    quizAttemptsLeft = 3;
+    quizTargetOrder = shuffleArray([...quizPool]);
+    render();
     return;
   }
 
   const targetItem = shuffleOrder[currentItemIndex];
-
-  // Grid-Order pro Aufgabe neu gemischt (damit nicht "1-2-3-4")
   const gridItems = shuffleArray([...block.items]);
 
   appEl.innerHTML = `
     <div class="screen screen-shuffle">
       <div class="meta">
-        <div class="badge">Block ${currentBlockIndex + 1} – Phase 2</div>
+        <div class="badge">Block ${blockNo} – Phase 2</div>
         <div class="badge">Aufgabe ${currentItemIndex + 1} von ${shuffleOrder.length}</div>
       </div>
+
       <h1>Bilder & Wörter</h1>
       <p>Höre das Wort und tippe das richtige Bild.</p>
 
       <div class="icon-grid">
         ${gridItems.map((it) => `
           <button class="icon-card" data-id="${it.id}">
-            <img src="${getQuizImageSrc(block, it)}" alt="${escapeHtml(it.word)}">
+            <img
+              src="${getItemQuizImageSrc(block, blockNo, it)}"
+              data-fallback="${escapeHtml(it.image || "")}"
+              alt=""
+            >
           </button>
         `).join("")}
       </div>
@@ -463,6 +524,8 @@ function renderShufflePhase(block) {
       <div id="shuffle-feedback" class="feedback"></div>
     </div>
   `;
+
+  attachImgFallbacks();
 
   const feedbackEl = document.getElementById("shuffle-feedback");
   const playTarget = () => speakWord(targetItem.word, 1.0);
@@ -477,50 +540,56 @@ function renderShufflePhase(block) {
         return;
       }
       feedbackEl.textContent = "✅ Richtig!";
-
       setTimeout(() => {
         currentItemIndex++;
         renderShufflePhase(block);
-      }, 700);
+      }, 650);
     };
   });
 }
 
-// ----------------- Phase 3: Hör-Quiz (4er Pack, Ziel-Reihenfolge random; Grid jedes Mal neu gemischt) -----------------
+// ----------------- PHASE 3 (GLOBAL Hör-Quiz, 12er Pool, immer 4er Pack, no labels) -----------------
+function renderGlobalQuizPhase() {
+  stopAllAudioStates();
 
-function renderQuizPhase(block) {
-  stopMicIfNeeded();
+  if (!quizTargetOrder?.length) quizTargetOrder = shuffleArray([...quizPool]);
 
-  // Reihenfolge der Zielwörter pro Block/Phase EINMAL festlegen
-  if (!quizOrder || quizOrder.length !== block.items.length) {
-    quizOrder = shuffleArray([...block.items]);
-  }
-
-  // Wenn fertig: Block/Ende
-  if (currentItemIndex >= quizOrder.length) {
-    nextPhaseOrBlock();
+  if (quizIndex >= quizTargetOrder.length) {
+    // Quiz fertig -> Satz-Übung
+    currentPhase = "sentences";
+    sentenceIndex = 0;
+    render();
     return;
   }
 
-  const targetItem = quizOrder[currentItemIndex];
+  const target = quizTargetOrder[quizIndex];
 
-  // Grid-Order pro Aufgabe neu gemischt (damit nicht "1-2-3-4")
-  const gridItems = shuffleArray([...block.items]);
+  // 3 Distraktoren aus den übrigen 11 wählen
+  const others = quizPool.filter((x) => x.qid !== target.qid);
+  const distractors = takeN(shuffleArray(others), 3);
+
+  // 4er-Pack mischen
+  const pack = shuffleArray([target, ...distractors]);
 
   appEl.innerHTML = `
     <div class="screen screen-quiz">
       <div class="meta">
-        <div class="badge">Block ${currentBlockIndex + 1} – Phase 3</div>
-        <div class="badge">Aufgabe ${currentItemIndex + 1} von ${quizOrder.length}</div>
+        <div class="badge">Phase 3 – Hör-Quiz (12 Bilder)</div>
+        <div class="badge">Aufgabe ${quizIndex + 1} von ${quizTargetOrder.length}</div>
         <div class="badge">Versuche: ${quizAttemptsLeft}</div>
       </div>
+
       <h1>Hör-Quiz</h1>
       <p>Höre das Wort und tippe auf das richtige Bild.</p>
 
       <div class="icon-grid">
-        ${gridItems.map((it) => `
-          <button class="icon-card" data-id="${it.id}">
-            <img src="${getQuizImageSrc(block, it)}" alt="${escapeHtml(it.word)}">
+        ${pack.map((it) => `
+          <button class="icon-card" data-qid="${it.qid}">
+            <img
+              src="${it.img}"
+              data-fallback="${escapeHtml(it.fallbackImg || "")}"
+              alt=""
+            >
           </button>
         `).join("")}
       </div>
@@ -533,28 +602,28 @@ function renderQuizPhase(block) {
     </div>
   `;
 
+  attachImgFallbacks();
+
   const feedbackEl = document.getElementById("quiz-feedback");
-  const playTarget = () => speakWord(targetItem.word, 1.0);
+  const playTarget = () => speakWord(target.word, 1.0);
   document.getElementById("btn-play-quiz").onclick = playTarget;
   playTarget();
 
   const markCorrect = () => {
-    appEl.querySelector(`.icon-card[data-id="${targetItem.id}"]`)?.classList.add("correct");
+    appEl.querySelector(`.icon-card[data-qid="${target.qid}"]`)?.classList.add("correct");
   };
 
   appEl.querySelectorAll(".icon-card").forEach((btn) => {
     btn.onclick = () => {
-      const id = btn.getAttribute("data-id");
-
-      if (id === targetItem.id) {
+      const qid = btn.getAttribute("data-qid");
+      if (qid === target.qid) {
         feedbackEl.textContent = "✅ Richtig!";
         markCorrect();
-
         setTimeout(() => {
           quizAttemptsLeft = 3;
-          currentItemIndex++;
-          renderQuizPhase(block);
-        }, 850);
+          quizIndex++;
+          renderGlobalQuizPhase();
+        }, 800);
       } else {
         quizAttemptsLeft--;
         if (quizAttemptsLeft > 0) {
@@ -562,25 +631,166 @@ function renderQuizPhase(block) {
         } else {
           feedbackEl.textContent = "❌ Leider falsch. Das richtige Bild ist markiert.";
           markCorrect();
-
           setTimeout(() => {
             quizAttemptsLeft = 3;
-            currentItemIndex++;
-            renderQuizPhase(block);
-          }, 1100);
+            quizIndex++;
+            renderGlobalQuizPhase();
+          }, 1000);
         }
       }
     };
   });
 }
 
-// Endscreen
+// ----------------- PHASE 4 (Satz-Übung: nachsprechen, Score ≥85% zum Weiter) -----------------
+function renderSentencePhase() {
+  stopAllAudioStates();
+
+  if (!sentenceList?.length) {
+    currentPhase = "end";
+    renderEndScreen();
+    return;
+  }
+
+  if (sentenceIndex >= sentenceList.length) {
+    renderEndScreen();
+    return;
+  }
+
+  const s = sentenceList[sentenceIndex];
+
+  appEl.innerHTML = `
+    <div class="screen screen-learn">
+      <div class="meta">
+        <div class="badge">Phase 4 – Sätze nachsprechen</div>
+        <div class="badge">Satz ${sentenceIndex + 1} von ${sentenceList.length}</div>
+      </div>
+
+      <h1>Satz-Training</h1>
+
+      <div class="card card-word" style="text-align:center;">
+        <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(s.text)}</div>
+        <div class="word-translation"></div>
+      </div>
+
+      <div class="controls-audio">
+        <button id="btn-hear" class="btn primary">🔊 Hören</button>
+        <button id="btn-hear-slow" class="btn secondary">🐢 Langsam</button>
+      </div>
+
+      <div class="controls-speak">
+        <button id="btn-speak" class="btn mic">${micRecording ? "⏹ Stop" : "🎤 Ich spreche"}</button>
+        <div id="speak-feedback" class="feedback"></div>
+      </div>
+
+      <div class="controls-nav">
+        <button id="btn-next" class="btn secondary" disabled>Weiter</button>
+      </div>
+    </div>
+  `;
+
+  const btnHear = document.getElementById("btn-hear");
+  const btnHearSlow = document.getElementById("btn-hear-slow");
+  const btnSpeak = document.getElementById("btn-speak");
+  const btnNext = document.getElementById("btn-next");
+
+  btnHear.onclick = () => speakWord(s.text, 1.0);
+  btnHearSlow.onclick = () => speakWord(s.text, 0.7);
+  btnNext.disabled = true;
+
+  btnSpeak.onclick = async () => {
+    const clearAutoStop = () => {
+      try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+      autoStopTimer = null;
+    };
+
+    const stopAndAssess = async () => {
+      if (!micRecording) return;
+
+      clearAutoStop();
+      btnSpeak.disabled = true;
+      setSpeakFeedback("Verarbeite…", null);
+
+      const recognizedText = await stopBrowserASR();
+      const exact = _norm(s.text) && (_norm(s.text) === _norm(recognizedText));
+      const sim = exact ? 1 : _similarityScore(s.text, recognizedText);
+      const overallScore = Math.round(sim * 100);
+
+      micRecording = false;
+      btnSpeak.textContent = "🎤 Ich spreche";
+
+      const grade = _grade(overallScore);
+      const pass = overallScore >= PASS_THRESHOLD;
+
+      btnNext.disabled = !pass;
+
+      setSpeakFeedback(
+        `Aussprache: ${overallScore}% (${grade})` +
+        (recognizedText ? ` · Erkannt: „${recognizedText}“` : " · Erkannt: (leer)") +
+        (pass ? " ✅ Weiter" : ` ❌ Nochmal (ab ${PASS_THRESHOLD}%)`),
+        pass
+      );
+
+      btnSpeak.disabled = false;
+    };
+
+    try {
+      if (!micRecording) {
+        stopAllAudioStates();
+
+        if (!speechRecAvailable()) {
+          setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
+          return;
+        }
+
+        setSpeakFeedback("Sprich jetzt 2–4 Sekunden. Dann Stop drücken.", null);
+
+        const started = startBrowserASR("fr-FR");
+        if (!started) {
+          setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
+          return;
+        }
+
+        micRecording = true;
+        btnSpeak.textContent = "⏹ Stop";
+
+        clearAutoStop();
+        autoStopTimer = setTimeout(() => {
+          stopAndAssess().catch((e) => {
+            console.error(e);
+            setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
+          });
+        }, 4500);
+      } else {
+        await stopAndAssess();
+      }
+    } catch (e) {
+      console.error(e);
+      clearAutoStop();
+      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
+      micRecording = false;
+      stopAllAudioStates();
+      btnSpeak.disabled = false;
+      btnSpeak.textContent = "🎤 Ich spreche";
+    } finally {
+      btnSpeak.disabled = false;
+    }
+  };
+
+  btnNext.onclick = () => {
+    stopAllAudioStates();
+    sentenceIndex++;
+    renderSentencePhase();
+  };
+}
+
+// ----------------- END -----------------
 function renderEndScreen() {
-  stopMicIfNeeded();
+  stopAllAudioStates();
   appEl.innerHTML = `
     <div class="screen screen-end">
       <h1>Tag 1 geschafft 🎉</h1>
-      <p>Du hast alle Wörter zur Klassensprache Französisch bearbeitet.</p>
+      <p>Du hast alle Übungen abgeschlossen (Wörter, Quiz, Sätze).</p>
       <button id="btn-repeat" class="btn primary">Tag 1 wiederholen</button>
     </div>
   `;
@@ -626,9 +836,7 @@ function speakWord(text, rate = 1.0) {
     if (ttsVoice) {
       utter.voice = ttsVoice;
       utter.lang = ttsVoice.lang;
-    } else {
-      utter.lang = "fr-FR";
-    }
+    } else utter.lang = "fr-FR";
     utter.rate = rate;
     window.speechSynthesis.speak(utter);
   } catch (e) {
@@ -637,75 +845,8 @@ function speakWord(text, rate = 1.0) {
   }
 }
 
-// ----------------- Pronounce (SERVER MODE – bleibt drin, wird aber aktuell nicht genutzt) -----------------
-async function callPronounce({ targetText, language, audioBase64 }) {
-  const pureB64 = toPureBase64(audioBase64);
-
-  console.log("[PRONOUNCE] POST →", PRONOUNCE_URL_DEFAULT);
-  console.log("[PRONOUNCE] target:", targetText, "| lang:", language, "| b64.len:", pureB64?.length);
-
-  const resp = await fetch(PRONOUNCE_URL_DEFAULT, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      targetText,
-      language,
-      audioBase64: pureB64,
-      enableMiscue: true
-    }),
-    cache: "no-store"
-  });
-
-  const ct = resp.headers.get("content-type") || "";
-  const raw = await resp.text();
-
-  let json = {};
-  if (ct.includes("application/json")) {
-    try { json = JSON.parse(raw || "{}"); } catch { json = {}; }
-  }
-
-  if (!resp.ok) {
-    console.error("[PRONOUNCE] FAIL", resp.status, ct, raw.slice(0, 1200));
-    throw new Error(
-      json?.error ||
-      `Pronounce failed (${resp.status}). Response: ${raw.slice(0, 200)}`
-    );
-  }
-
-  return ct.includes("application/json") ? (json || {}) : { ok: true, raw };
-}
-
-function toPureBase64(maybeDataUrl) {
-  const s = String(maybeDataUrl || "");
-  const idx = s.indexOf(",");
-  if (idx >= 0 && s.slice(0, idx).includes("base64")) return s.slice(idx + 1);
-  return s;
-}
-
-// --- WAV16k Recorder (SERVER MODE) ---
-let wavRec = null;
-
-async function startMicWav16k() {
-  stopMicIfNeeded();
-  wavRec = await startWav16kRecorder();
-}
-
-async function stopMicGetWavDataUrl() {
-  if (!wavRec) throw new Error("Recorder not started");
-  const rec = wavRec;
-  wavRec = null;
-
-  const audioDataUrl = await rec.stop();
-  if (typeof audioDataUrl !== "string" || audioDataUrl.length < 1000) {
-    throw new Error("Audio zu kurz/leer");
-  }
-  if (!audioDataUrl.startsWith("data:audio/wav;base64,")) {
-    throw new Error("Unerwartetes Audio-Format");
-  }
-  return audioDataUrl;
-}
-
-function stopMicIfNeeded() {
+// ----------------- CLEANUP -----------------
+function stopAllAudioStates() {
   try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
   autoStopTimer = null;
 
@@ -713,148 +854,12 @@ function stopMicIfNeeded() {
     try { _sr.stop(); } catch {}
     _sr = null;
   }
-
-  if (wavRec && typeof wavRec.stop === "function") {
-    try { wavRec.stop(); } catch {}
-  }
-  wavRec = null;
-
   micRecording = false;
+
+  try { window.speechSynthesis?.cancel?.(); } catch {}
 }
 
-async function startWav16kRecorder() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-
-  const AudioCtx = window.AudioContext || window.webkitAudioContext;
-  const ctx = new AudioCtx();
-  try { await ctx.resume?.(); } catch {}
-
-  const sampleRateIn = ctx.sampleRate;
-  const source = ctx.createMediaStreamSource(stream);
-
-  const processor = ctx.createScriptProcessor(4096, 1, 1);
-  const zero = ctx.createGain();
-  zero.gain.value = 0;
-
-  const chunks = [];
-  processor.onaudioprocess = (e) => {
-    const input = e.inputBuffer.getChannelData(0);
-    chunks.push(new Float32Array(input));
-  };
-
-  source.connect(processor);
-  processor.connect(zero);
-  zero.connect(ctx.destination);
-
-  let stoppedOnce = false;
-
-  const stop = async () => {
-    if (stoppedOnce) return "";
-    stoppedOnce = true;
-
-    try { processor.disconnect(); } catch {}
-    try { source.disconnect(); } catch {}
-    try { zero.disconnect(); } catch {}
-
-    try { stream.getTracks().forEach((t) => t.stop()); } catch {}
-    try { await ctx.close(); } catch {}
-
-    const merged = mergeFloat32(chunks);
-    const down = downsampleFloat32(merged, sampleRateIn, 16000);
-    const wavBlob = encodeWavFromFloat32(down, 16000);
-    return await blobToDataURL(wavBlob);
-  };
-
-  return { stop };
-}
-
-function mergeFloat32(chunks) {
-  let len = 0;
-  for (const c of chunks) len += c.length;
-  const out = new Float32Array(len);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.length;
-  }
-  return out;
-}
-
-function downsampleFloat32(input, inRate, outRate) {
-  if (!input || input.length === 0) return new Float32Array(0);
-  if (outRate === inRate) return input;
-
-  const ratio = inRate / outRate;
-  const newLen = Math.max(1, Math.round(input.length / ratio));
-  const out = new Float32Array(newLen);
-
-  for (let i = 0; i < newLen; i++) {
-    const idx = i * ratio;
-    const i0 = Math.floor(idx);
-    const i1 = Math.min(i0 + 1, input.length - 1);
-    const frac = idx - i0;
-    out[i] = input[i0] * (1 - frac) + input[i1] * frac;
-  }
-  return out;
-}
-
-function encodeWavFromFloat32(float32, sampleRate) {
-  const pcm16 = new Int16Array(float32.length);
-  for (let i = 0; i < float32.length; i++) {
-    let s = Math.max(-1, Math.min(1, float32[i]));
-    pcm16[i] = s < 0 ? (s * 0x8000) : (s * 0x7fff);
-  }
-
-  const bytesPerSample = 2;
-  const numChannels = 1;
-  const blockAlign = numChannels * bytesPerSample;
-  const byteRate = sampleRate * blockAlign;
-  const dataSize = pcm16.length * bytesPerSample;
-
-  const buffer = new ArrayBuffer(44 + dataSize);
-  const view = new DataView(buffer);
-
-  writeStr(view, 0, "RIFF");
-  view.setUint32(4, 36 + dataSize, true);
-  writeStr(view, 8, "WAVE");
-  writeStr(view, 12, "fmt ");
-  view.setUint32(16, 16, true);
-  view.setUint16(20, 1, true);
-  view.setUint16(22, numChannels, true);
-  view.setUint32(24, sampleRate, true);
-  view.setUint32(28, byteRate, true);
-  view.setUint16(32, blockAlign, true);
-  view.setUint16(34, 16, true);
-  writeStr(view, 36, "data");
-  view.setUint32(40, dataSize, true);
-
-  let offset = 44;
-  for (let i = 0; i < pcm16.length; i++, offset += 2) {
-    view.setInt16(offset, pcm16[i], true);
-  }
-
-  return new Blob([buffer], { type: "audio/wav" });
-}
-
-function blobToDataURL(blob) {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(r.result);
-    r.onerror = reject;
-    r.readAsDataURL(blob);
-  });
-}
-
-// ----------------- Hilfsfunktionen -----------------
-function shuffleArray(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
+// ----------------- UI HELPERS -----------------
 function setSpeakFeedback(text, pass) {
   const el = document.getElementById("speak-feedback");
   if (!el) return;
@@ -873,6 +878,12 @@ function setSpeakFeedback(text, pass) {
   }
 }
 
+function capFirst(s) {
+  s = String(s || "").trim();
+  if (!s) return s;
+  return s.charAt(0).toUpperCase() + s.slice(1);
+}
+
 function escapeHtml(str) {
   return String(str || "")
     .replaceAll("&", "&amp;")
@@ -882,7 +893,16 @@ function escapeHtml(str) {
     .replaceAll("'", "&#039;");
 }
 
-function writeStr(view, offset, str) {
-  for (let i = 0; i < str.length; i++) view.setUint8(offset + i, str.charCodeAt(i));
+// ----------------- ARRAY HELPERS -----------------
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
 }
 
+function takeN(arr, n) {
+  return arr.slice(0, Math.max(0, n));
+}
