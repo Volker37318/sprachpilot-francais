@@ -1,0 +1,219 @@
+{
+  "schema_version": 1,
+  "app": {
+    "name": "Deutsch VOR-Training",
+    "default_ui_language": "en",
+    "target_language": "de"
+  },
+  "tracks": [
+    {
+      "id": "en",
+      "label": "Deutsch | English",
+      "ui_language": "en",
+      "target_language": "de",
+      "base_path": "/lessons/en/",
+      "lessons": [
+        {
+          "lesson_id": "W1D1",
+          "week": 1,
+          "day_in_week": 1,
+          "global_day": 1,
+          "title_en": "Classroom Navigation 1 (Book / Page / Exercise)",
+          "title_de": "Kurs-Navigation 1 (Buch / Seite / Aufgabe)",
+          "file": "W1D1.json",
+          "audio_base": "/audio/W1D1/"
+        },
+        {
+          "lesson_id": "W1D2",
+          "week": 1,
+          "day_in_week": 2,
+          "global_day": 2,
+          "title_en": "Classroom Signals (Now / First / Then)",
+          "title_de": "Kurs-Signale (jetzt / zuerst / dann)",
+          "file": "W1D2.json",
+          "audio_base": "/audio/W1D2/"
+        },
+        {
+          "lesson_id": "W1D3",
+          "week": 1,
+          "day_in_week": 3,
+          "global_day": 3,
+          "title_en": "Read / Write / Fill in",
+          "title_de": "Lesen / Schreiben / Eintragen",
+          "file": "W1D3.json",
+          "audio_base": "/audio/W1D3/"
+        },
+        {
+          "lesson_id": "W1D4",
+          "week": 1,
+          "day_in_week": 4,
+          "global_day": 4,
+          "title_en": "Listening Routine (Track / Again / Stop)",
+          "title_de": "Hör-Routine (Track / noch einmal / Stopp)",
+          "file": "W1D4.json",
+          "audio_base": "/audio/W1D4/"
+        },
+        {
+          "lesson_id": "W1D5",
+          "week": 1,
+          "day_in_week": 5,
+          "global_day": 5,
+          "title_en": "Week 1 Simulation (Mini Lesson)",
+          "title_de": "Woche 1 Simulation (Mini-Unterricht)",
+          "file": "W1D5.json",
+          "audio_base": "/audio/W1D5/"
+        },
+        {
+          "lesson_id": "W2D1",
+          "week": 2,
+          "day_in_week": 1,
+          "global_day": 6,
+          "title_en": "Mark / Underline / Circle",
+          "title_de": "Markieren / Unterstreichen / Einkreisen",
+          "file": "W2D1.json",
+          "audio_base": "/audio/W2D1/"
+        },
+        {
+          "lesson_id": "W2D2",
+          "week": 2,
+          "day_in_week": 2,
+          "global_day": 7,
+          "title_en": "Tick (A/B/C) — Choose the correct answer",
+          "title_de": "Ankreuzen (A/B/C) — richtige Antwort wählen",
+          "file": "W2D2.json",
+          "audio_base": "/audio/W2D2/"
+        },
+        {
+          "lesson_id": "W2D3",
+          "week": 2,
+          "day_in_week": 3,
+          "global_day": 8,
+          "title_en": "Complete (Word box) — Fill in the gaps",
+          "title_de": "Ergänzen (Wortkasten) — Lücken füllen",
+          "file": "W2D3.json",
+          "audio_base": "/audio/W2D3/"
+        },
+        {
+          "lesson_id": "W2D4",
+          "week": 2,
+          "day_in_week": 4,
+          "global_day": 9,
+          "title_en": "Complete (No word box) — Pay attention to…",
+          "title_de": "Ergänzen (ohne Wortkasten) — Achten Sie auf…",
+          "file": "W2D4.json",
+          "audio_base": "/audio/W2D4/"
+        },
+        {
+          "lesson_id": "W2D5",
+          "week": 2,
+          "day_in_week": 5,
+          "global_day": 10,
+          "title_en": "Week 2 Simulation (Mixed tasks)",
+          "title_de": "Woche 2 Simulation (Aufgaben-Mix)",
+          "file": "W2D5.json",
+          "audio_base": "/audio/W2D5/"
+        },
+        {
+          "lesson_id": "W3D1",
+          "week": 3,
+          "day_in_week": 1,
+          "global_day": 11,
+          "title_en": "Match (Text ↔ Picture / Word ↔ Meaning)",
+          "title_de": "Zuordnen (Text ↔ Bild / Wort ↔ Bedeutung)",
+          "file": "W3D1.json",
+          "audio_base": "/audio/W3D1/"
+        },
+        {
+          "lesson_id": "W3D2",
+          "week": 3,
+          "day_in_week": 2,
+          "global_day": 12,
+          "title_en": "Connect (A ↔ B) — Draw lines",
+          "title_de": "Verbinden (A ↔ B) — Linien ziehen",
+          "file": "W3D2.json",
+          "audio_base": "/audio/W3D2/"
+        },
+        {
+          "lesson_id": "W3D3",
+          "week": 3,
+          "day_in_week": 3,
+          "global_day": 13,
+          "title_en": "Put in order (First / Then / Finally)",
+          "title_de": "Reihenfolge (zuerst / dann / zum Schluss)",
+          "file": "W3D3.json",
+          "audio_base": "/audio/W3D3/"
+        },
+        {
+          "lesson_id": "W3D4",
+          "week": 3,
+          "day_in_week": 4,
+          "global_day": 14,
+          "title_en": "Fill in a table (Row / Column)",
+          "title_de": "Tabelle ausfüllen (Zeile / Spalte)",
+          "file": "W3D4.json",
+          "audio_base": "/audio/W3D4/"
+        },
+        {
+          "lesson_id": "W3D5",
+          "week": 3,
+          "day_in_week": 5,
+          "global_day": 15,
+          "title_en": "Week 3 Simulation (Worksheet)",
+          "title_de": "Woche 3 Simulation (Arbeitsblatt)",
+          "file": "W3D5.json",
+          "audio_base": "/audio/W3D5/"
+        },
+        {
+          "lesson_id": "W4D1",
+          "week": 4,
+          "day_in_week": 1,
+          "global_day": 16,
+          "title_en": "Pair work (Partner A / Partner B)",
+          "title_de": "Partnerarbeit (Partner A / Partner B)",
+          "file": "W4D1.json",
+          "audio_base": "/audio/W4D1/"
+        },
+        {
+          "lesson_id": "W4D2",
+          "week": 4,
+          "day_in_week": 2,
+          "global_day": 17,
+          "title_en": "Group work — Compare and discuss",
+          "title_de": "Gruppenarbeit — vergleichen und besprechen",
+          "file": "W4D2.json",
+          "audio_base": "/audio/W4D2/"
+        },
+        {
+          "lesson_id": "W4D3",
+          "week": 4,
+          "day_in_week": 3,
+          "global_day": 18,
+          "title_en": "Check / Correct / Improve",
+          "title_de": "Kontrollieren / Korrigieren / Verbessern",
+          "file": "W4D3.json",
+          "audio_base": "/audio/W4D3/"
+        },
+        {
+          "lesson_id": "W4D4",
+          "week": 4,
+          "day_in_week": 4,
+          "global_day": 19,
+          "title_en": "Classroom questions (Help! / Repeat! / What does it mean?)",
+          "title_de": "Fragen im Unterricht (Hilfe! / Wiederholen! / Bedeutung?)",
+          "file": "W4D4.json",
+          "audio_base": "/audio/W4D4/"
+        },
+        {
+          "lesson_id": "W4D5",
+          "week": 4,
+          "day_in_week": 5,
+          "global_day": 20,
+          "title_en": "Final Simulation (Full mini lesson)",
+          "title_de": "Abschluss-Simulation (kompletter Mini-Unterricht)",
+          "file": "W4D5.json",
+          "audio_base": "/audio/W4D5/"
+        }
+      ]
+    }
+  ]
+}

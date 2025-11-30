@@ -1,0 +1,5 @@
+[build]
+  base = "sprachpilot-francais"
+  publish = "."
+  functions = "netlify/functions"
+  command = "echo no-build"
