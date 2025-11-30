@@ -1,14 +1,12 @@
-"use strict";
-
 // src/app.js – Vor-A1 / Klassensprache Französisch
 // Flow: Lernen → Bilder & Tippen → Hör-Quiz
 // Aussprache-Check FINAL: Browser -> Netlify Function -> Koyeb (/pronounce) -> Azure
-// FIX: Statt MediaRecorder(WebM) -> stabiler WAV PCM16 16k Recorder (kleine Payload, weniger Abbrüche)
+// FIX: WAV PCM16 16k Recorder + sendet REINES base64 (ohne data:audio/wav;base64, prefix)
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
 
-// WICHTIG: Frontend ruft NICHT direkt Koyeb auf, sondern die Netlify Function (same-origin, kein CORS)
+// Frontend ruft NICHT direkt Koyeb auf, sondern die Netlify Function (same-origin)
 const PRONOUNCE_URL_DEFAULT = "/.netlify/functions/pronounce";
 
 const appEl = document.getElementById("app");
@@ -36,26 +34,15 @@ let micRecording = false;
 let wavRec = null;
 let autoStopTimer = null;
 
-// Optionaler Health-Check (zeigt sofort, ob die Netlify Function existiert)
-let pronounceProxyReady = null;
-(async function healthCheckPronounceProxy() {
+// ---- Self-check: Proxy erreichbar? (nur Info, kein Blocker) ----
+(async function pingPronounceProxy() {
   try {
-    const r = await fetch(PRONOUNCE_URL_DEFAULT, { method: "GET", cache: "no-store" });
-    if (!r.ok) {
-      pronounceProxyReady = false;
-      console.warn("[PRONOUNCE] Proxy not reachable:", r.status);
-      return;
-    }
-    const j = await r.json().catch(() => null);
-    pronounceProxyReady = !!(j && j.ok);
-    if (pronounceProxyReady) {
-      console.log("[PRONOUNCE] Proxy ready.");
-    } else {
-      console.warn("[PRONOUNCE] Proxy responded, but not ok:", j);
-    }
+    const r = await fetch(PRONOUNCE_URL_DEFAULT, { cache: "no-store" });
+    const t = await r.text();
+    if (r.ok) console.log("[PRONOUNCE] Proxy ready.", t);
+    else console.warn("[PRONOUNCE] Proxy not ready:", r.status, t);
   } catch (e) {
-    pronounceProxyReady = false;
-    console.warn("[PRONOUNCE] Proxy check failed:", e);
+    console.warn("[PRONOUNCE] Proxy ping failed:", e);
   }
 })();
 
@@ -78,9 +65,7 @@ loadLesson(TARGET_LANG, LESSON_ID)
 
 async function loadLesson(lang, lessonId) {
   const res = await fetch(`lessons/${lang}/${lessonId}.json`);
-  if (!res.ok) {
-    throw new Error(`Konnte Lektion nicht laden: ${res.status}`);
-  }
+  if (!res.ok) throw new Error(`Konnte Lektion nicht laden: ${res.status}`);
   return await res.json();
 }
 
@@ -104,11 +89,10 @@ function startBlock(index) {
 function nextPhaseOrBlock() {
   stopMicIfNeeded(); // Sicherheit
   const blocks = lesson.blocks;
-  if (currentPhase === "learn") {
-    currentPhase = "shuffle";
-  } else if (currentPhase === "shuffle") {
-    currentPhase = "quiz";
-  } else if (currentPhase === "quiz") {
+
+  if (currentPhase === "learn") currentPhase = "shuffle";
+  else if (currentPhase === "shuffle") currentPhase = "quiz";
+  else if (currentPhase === "quiz") {
     if (currentBlockIndex < blocks.length - 1) {
       startBlock(currentBlockIndex + 1);
       return;
@@ -117,6 +101,7 @@ function nextPhaseOrBlock() {
       return;
     }
   }
+
   currentItemIndex = 0;
   quizTargetItem = null;
   quizAttemptsLeft = 3;
@@ -129,13 +114,9 @@ function render() {
   if (!lesson) return;
   const block = lesson.blocks[currentBlockIndex];
 
-  if (currentPhase === "learn") {
-    renderLearnPhase(block);
-  } else if (currentPhase === "shuffle") {
-    renderShufflePhase(block);
-  } else {
-    renderQuizPhase(block);
-  }
+  if (currentPhase === "learn") renderLearnPhase(block);
+  else if (currentPhase === "shuffle") renderShufflePhase(block);
+  else renderQuizPhase(block);
 }
 
 // Phase 1: Icon + Wort + Hören + Aussprache prüfen
@@ -196,26 +177,19 @@ function renderLearnPhase(block) {
       btnSpeak.disabled = true;
       setSpeakFeedback("Verarbeite Audio…");
 
+      // stop wav recorder -> DataURL (data:audio/wav;base64,...)
       const audioDataUrl = await stopMicGetWavDataUrl();
 
       micRecording = false;
       btnSpeak.textContent = "🎤 Ich spreche";
 
-      // Wenn Proxy definitiv fehlt, sag es sofort klar (ohne Rätselraten)
-      if (pronounceProxyReady === false) {
-        setSpeakFeedback(
-          "Aussprache-Prüfung ist nicht erreichbar (Proxy fehlt / 404). " +
-          "Prüfe: /.netlify/functions/pronounce"
-        );
-        btnNext.disabled = false;
-        btnSpeak.disabled = false;
-        return;
-      }
+      // ✅ WICHTIG: Nur Base64 (ohne "data:audio/wav;base64,")
+      const audioBase64 = toPureBase64(audioDataUrl);
 
       const result = await callPronounce({
         targetText: item.word,
         language: "fr-FR",
-        audioDataUrl
+        audioBase64
       });
 
       const overall = result?.overallScore ?? 0;
@@ -299,15 +273,11 @@ function renderShufflePhase(block) {
       <p>Höre das Wort und tippe das richtige Bild.</p>
 
       <div class="icon-grid">
-        ${items
-          .map(
-            (it) => `
+        ${items.map((it) => `
           <button class="icon-card" data-id="${it.id}">
             <img src="${it.image}" alt="${escapeHtml(it.word)}">
           </button>
-        `
-          )
-          .join("")}
+        `).join("")}
       </div>
 
       <div class="controls">
@@ -366,15 +336,11 @@ function renderQuizPhase(block) {
       <p>Höre das Wort und tippe auf das richtige Bild.</p>
 
       <div class="icon-grid">
-        ${items
-          .map(
-            (it) => `
+        ${items.map((it) => `
           <button class="icon-card" data-id="${it.id}">
             <img src="${it.image}" alt="${escapeHtml(it.word)}">
           </button>
-        `
-          )
-          .join("")}
+        `).join("")}
       </div>
 
       <div class="controls">
@@ -395,9 +361,7 @@ function renderQuizPhase(block) {
       const id = btn.getAttribute("data-id");
       if (id === quizTargetItem.id) {
         feedbackEl.textContent = "✅ Richtig!";
-        appEl
-          .querySelector(`.icon-card[data-id="${quizTargetItem.id}"]`)
-          ?.classList.add("correct");
+        appEl.querySelector(`.icon-card[data-id="${quizTargetItem.id}"]`)?.classList.add("correct");
 
         setTimeout(() => {
           quizTargetItem = null;
@@ -416,12 +380,12 @@ function renderQuizPhase(block) {
           feedbackEl.textContent = `❌ Falsch. Du hast noch ${quizAttemptsLeft} Möglichkeiten.`;
         } else {
           feedbackEl.textContent = "❌ Leider falsch. Das richtige Bild ist markiert.";
-          appEl
-            .querySelector(`.icon-card[data-id="${quizTargetItem.id}"]`)
-            ?.classList.add("correct");
+          appEl.querySelector(`.icon-card[data-id="${quizTargetItem.id}"]`)?.classList.add("correct");
+
           setTimeout(() => {
             quizTargetItem = null;
             quizAttemptsLeft = 3;
+
             if (currentItemIndex < block.items.length - 1) {
               currentItemIndex++;
               renderQuizPhase(block);
@@ -449,7 +413,7 @@ function renderEndScreen() {
   document.getElementById("btn-repeat").onclick = () => startLesson();
 }
 
-// ----------------- TTS (Text-to-Speech) -----------------
+// ----------------- TTS -----------------
 
 function initTTS() {
   if (!ttsSupported) {
@@ -500,37 +464,34 @@ function speakWord(text, rate = 1.0) {
   }
 }
 
-// ----------------- Pronounce / Mic -----------------
+// ----------------- Pronounce -----------------
 
-async function callPronounce({ targetText, language, audioDataUrl }) {
+async function callPronounce({ targetText, language, audioBase64 }) {
   const resp = await fetch(PRONOUNCE_URL_DEFAULT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       targetText,
       language,
-      audioBase64: audioDataUrl,
+      audioBase64,          // ✅ jetzt reines base64
       enableMiscue: true
     }),
     cache: "no-store"
   });
 
-  // Wenn Netlify eine HTML-404-Seite liefert, ist JSON kaputt -> wir geben besseres Debug zurück
-  const text = await resp.text();
-  let json = {};
-  try { json = JSON.parse(text); } catch {}
-
-  if (!resp.ok) {
-    const hint =
-      resp.status === 404
-        ? " (Netlify Function nicht gefunden: stimmt netlify.toml functions-Pfad + Repo-Pfad netlify/functions?)"
-        : "";
-    throw new Error((json && json.error) || `Pronounce failed (${resp.status})${hint}`);
-  }
+  const json = await resp.json().catch(() => ({}));
+  if (!resp.ok) throw new Error(json?.error || `Pronounce failed (${resp.status})`);
   return json;
 }
 
-// --- WAV16k Recorder: klein, stabil, Azure-tauglich ---
+function toPureBase64(maybeDataUrl) {
+  const s = String(maybeDataUrl || "");
+  const idx = s.indexOf(",");
+  if (idx >= 0 && s.slice(0, idx).includes("base64")) return s.slice(idx + 1);
+  return s;
+}
+
+// --- WAV16k Recorder ---
 
 async function startMicWav16k() {
   stopMicIfNeeded();
@@ -556,7 +517,6 @@ function stopMicIfNeeded() {
   try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
   autoStopTimer = null;
 
-  // stop ohne await (Sicherheit beim Screen-Wechsel)
   if (wavRec && typeof wavRec.stop === "function") {
     try { wavRec.stop(); } catch {}
   }
@@ -574,7 +534,6 @@ async function startWav16kRecorder() {
   const sampleRateIn = ctx.sampleRate;
   const source = ctx.createMediaStreamSource(stream);
 
-  // ScriptProcessor ist deprecated, aber in Chrome/Edge/iOS Safari praktisch überall verfügbar.
   const processor = ctx.createScriptProcessor(4096, 1, 1);
   const zero = ctx.createGain();
   zero.gain.value = 0;
@@ -605,8 +564,7 @@ async function startWav16kRecorder() {
     const merged = mergeFloat32(chunks);
     const down = downsampleFloat32(merged, sampleRateIn, 16000);
     const wavBlob = encodeWavFromFloat32(down, 16000);
-    const dataUrl = await blobToDataURL(wavBlob);
-    return dataUrl;
+    return await blobToDataURL(wavBlob);
   };
 
   return { stop };
