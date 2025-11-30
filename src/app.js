@@ -7,12 +7,6 @@
 // Danach: Phase 4 (Sätze nachsprechen)
 // Danach: Ende
 //
-// Feinabstimmung (User):
-// - "Weiter" entfernt
-// - Nur bei 100%: 4 Sekunden anzeigen, dann automatisch weiter
-// - Nach 5x falsch: Button "Später noch einmal" aktiv (orange-gelber Verlauf),
-//                   "Ich spreche" wird grau & passiv
-// - Verriegelung: Hören/Langsam dürfen NICHT während Mic oder TTS
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
@@ -1117,4 +1111,5 @@ function shuffleArray(arr) {
 function takeN(arr, n) {
   return arr.slice(0, Math.max(0, n));
 }
+
 
