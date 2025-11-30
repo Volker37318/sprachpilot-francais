@@ -466,22 +466,45 @@ function speakWord(text, rate = 1.0) {
 
 // ----------------- Pronounce -----------------
 
+// ----------------- Pronounce -----------------
 async function callPronounce({ targetText, language, audioBase64 }) {
+  const pureB64 = toPureBase64(audioBase64);
+
+  // Debug: sofort sehen, wohin und was geschickt wird
+  console.log("[PRONOUNCE] POST →", PRONOUNCE_URL_DEFAULT);
+  console.log("[PRONOUNCE] target:", targetText, "| lang:", language, "| b64.len:", pureB64?.length);
+
   const resp = await fetch(PRONOUNCE_URL_DEFAULT, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       targetText,
       language,
-      audioBase64,          // ✅ jetzt reines base64
+      audioBase64: pureB64,
       enableMiscue: true
     }),
     cache: "no-store"
   });
 
-  const json = await resp.json().catch(() => ({}));
-  if (!resp.ok) throw new Error(json?.error || `Pronounce failed (${resp.status})`);
-  return json;
+  const ct = resp.headers.get("content-type") || "";
+  const raw = await resp.text(); // <- WICHTIG: auch HTML/Text bei 503 sichtbar machen
+
+  // Versuche JSON zu parsen, falls es JSON ist
+  let json = {};
+  if (ct.includes("application/json")) {
+    try { json = JSON.parse(raw || "{}"); } catch { json = {}; }
+  }
+
+  if (!resp.ok) {
+    console.error("[PRONOUNCE] FAIL", resp.status, ct, raw.slice(0, 1200));
+    throw new Error(
+      json?.error ||
+      `Pronounce failed (${resp.status}). Response: ${raw.slice(0, 200)}`
+    );
+  }
+
+  // Erfolg: JSON zurückgeben (wenn’s JSON ist), sonst raw
+  return ct.includes("application/json") ? (json || {}) : { ok: true, raw };
 }
 
 function toPureBase64(maybeDataUrl) {
@@ -490,6 +513,7 @@ function toPureBase64(maybeDataUrl) {
   if (idx >= 0 && s.slice(0, idx).includes("base64")) return s.slice(idx + 1);
   return s;
 }
+
 
 // --- WAV16k Recorder ---
 
