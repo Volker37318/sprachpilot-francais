@@ -1,26 +1,36 @@
 // src/app.js – Vor-A1 / Klassensprache Französisch
-// Flow (NEU):
-// Block 1: Phase 1 (Lernen + Aussprache) → Phase 2 (Bilder tippen, 4er Pack)
+// Flow:
+// Block 1: Phase 1 (Lernen + Aussprache) → Phase 2 (Tippen, 4er Pack)
 // Block 2: Phase 1 → Phase 2
 // Block 3: Phase 1 → Phase 2
-// Danach: Phase 3 (Globales Hör-Quiz: 12 Bilder Pool, immer 4er Pack, ohne Beschriftung)
-// Danach: Phase 4 (Satz-Übung: Sätze aus gelernten Wörtern, nachsprechen, Score ≥85% zum Weiter)
+// Danach: Phase 3 (Globales Hör-Quiz aus 12 Bildern, 4er Pack, ohne Beschriftung)
+// Danach: Phase 4 (Sätze nachsprechen, Score ≥ 85% zum Weiter)
 // Danach: Ende
 //
-// Bilder liegen unter: assets/images/W1D1/bild1-1.png, bild1-2.png ... bild3-4.png
+// BILD-ZUORDNUNG (EXAKT nach User-Vorgabe):
+// bild1-1.png = Ecouter
+// bild1-2.png = Repeter
+// bild1-3.png = Lire
+// bild1-4.png = Ecrire
+// bild2-1.png = Voir
+// bild2-2.png = Ouvrir
+// bild2-3.png = Fermer
+// bild2-4.png = Trouver
+// bild3-1.png = Livre
+// bild3-2.png = Page
+// bild3-3.png = Numero
+// bild4-4.png = Tache
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
 
-const PRONOUNCE_MODE = "browser"; // "browser" | "server" (server bleibt drin, wird nicht genutzt)
+// Wir laufen erstmal lokal stabil (Browser-Spracherkennung)
+const PRONOUNCE_MODE = "browser"; // "browser" | "server"
+
 const PASS_THRESHOLD = 85;
 
-// Deine echte Struktur:
-const IMAGE_DIR = `assets/images/${LESSON_ID}/`; // -> /assets/images/W1D1/...
-
-// Global-Quiz: 3 Übungen * 4 Bilder = 12
-const QUIZ_BLOCKS = 3;
-const QUIZ_ITEMS_PER_BLOCK = 4;
+// Exakter Basis-Pfad, wie du es beschrieben hast:
+const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // => /assets/images/W1D1/
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -34,14 +44,14 @@ let lesson = null;
 // Block-Flow
 let currentBlockIndex = 0; // 0-based
 let currentPhase = "learn"; // "learn" | "shuffle" | "quiz" | "sentences"
-let currentItemIndex = 0;   // Index innerhalb Phase (Learn: Wort-Index, Shuffle: Aufgabe-Index)
+let currentItemIndex = 0;
 
 // Phase 2: Ziel-Reihenfolge pro Block
-let shuffleOrder = []; // array of items (block.items) in random order
+let shuffleOrder = [];
 
 // Phase 3: Global Quiz
-let quizPool = [];          // 12 Items (blockNo,pos,word,id)
-let quizTargetOrder = [];   // shuffled quizPool
+let quizPool = [];        // 12 Items
+let quizTargetOrder = []; // gemischte Reihenfolge der Ziele
 let quizIndex = 0;
 let quizAttemptsLeft = 3;
 
@@ -57,6 +67,56 @@ let ttsVoice = null;
 // ASR state
 let micRecording = false;
 let autoStopTimer = null;
+
+// ----------------- WORD → IMAGE (HARDCODED) -----------------
+
+function wordKeyForMap(word) {
+  // robust: lower + diacritics entfernen (écouter == ecouter)
+  const s = String(word || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .replace(/[’']/g, "'")
+    .replace(/[^a-z0-9 -]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return s;
+}
+
+const WORD_TO_IMAGE_FILE = {
+  "ecouter": "bild1-1.png",
+  "repeter": "bild1-2.png",
+  "lire":    "bild1-3.png",
+  "ecrire":  "bild1-4.png",
+
+  "voir":    "bild2-1.png",
+  "ouvrir":  "bild2-2.png",
+  "fermer":  "bild2-3.png",
+  "trouver": "bild2-4.png",
+
+  "livre":   "bild3-1.png",
+  "page":    "bild3-2.png",
+  "numero":  "bild3-3.png",
+
+  "tache":   "bild4-4.png"
+};
+
+function imageSrcForWord(word) {
+  const k = wordKeyForMap(word);
+  const file = WORD_TO_IMAGE_FILE[k];
+  return file ? (IMAGE_DIR + file) : "";
+}
+
+// Fallback: falls deine PNG nicht gefunden wird, nimm lesson-json image
+function attachImgFallbacks() {
+  appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
+    const fb = img.getAttribute("data-fallback") || "";
+    img.onerror = () => {
+      img.onerror = null;
+      if (fb) img.src = fb;
+    };
+  });
+}
 
 // ----------------- LOCAL ASR (Browser SpeechRecognition) -----------------
 let _sr = null;
@@ -120,13 +180,14 @@ function stopBrowserASR() {
   });
 }
 
-// --- scoring ---
+// --- Scoring ---
 function _norm(s) {
   return String(s || "")
     .toLowerCase()
-    .normalize("NFC")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
     .replace(/[’']/g, "'")
-    .replace(/[^\p{L}\p{N}' -]/gu, " ")
+    .replace(/[^a-z0-9' -]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -173,8 +234,8 @@ initTTS();
 loadLesson(TARGET_LANG, LESSON_ID)
   .then((data) => {
     lesson = data;
-    buildGlobalQuizPool();     // 12 Bilder vorbereiten
-    buildSentenceListSimple(); // Sätze vorbereiten
+    buildQuizPoolFromLesson();   // 12 Wörter aus der Lektion + Bildmapping
+    buildSentenceListSimple();   // Sätze aus den Wörtern
     startLesson();
   })
   .catch((err) => {
@@ -200,54 +261,48 @@ function startLesson() {
   render();
 }
 
-// ----------------- IMAGE PATHS -----------------
-function getBlockImagePath(blockNo1based, pos1based) {
-  // assets/images/W1D1/bild1-1.png
-  return `${IMAGE_DIR}bild${blockNo1based}-${pos1based}.png`;
-}
-
-// Fixe Zuordnung: item an Position -> bild<block>-<pos>.png
-function getItemQuizImageSrc(block, blockNo1based, it) {
-  const pos0 = block.items.findIndex((x) => x.id === it.id);
-  const pos1 = Math.max(1, pos0 + 1);
-  return getBlockImagePath(blockNo1based, pos1);
-}
-
-// Optionaler Fallback: wenn Bild nicht existiert, nimm lesson-json image
-function attachImgFallbacks() {
-  appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
-    const fb = img.getAttribute("data-fallback");
-    img.onerror = () => {
-      img.onerror = null;
-      if (fb) img.src = fb;
-    };
-  });
-}
-
-// ----------------- GLOBAL QUIZ POOL (12 Bilder) -----------------
-function buildGlobalQuizPool() {
+// ----------------- QUIZ POOL (12) -----------------
+function buildQuizPoolFromLesson() {
   quizPool = [];
   if (!lesson?.blocks?.length) return;
 
-  const maxBlocks = Math.min(QUIZ_BLOCKS, lesson.blocks.length);
-  for (let b = 0; b < maxBlocks; b++) {
+  // Wir nehmen einfach ALLE Items, die wir in den ersten Blöcken finden,
+  // aber maximal 12 (so wie du 12 Bilder hast).
+  for (let b = 0; b < lesson.blocks.length; b++) {
     const block = lesson.blocks[b];
-    const maxItems = Math.min(QUIZ_ITEMS_PER_BLOCK, block.items.length);
-    for (let i = 0; i < maxItems; i++) {
+    for (let i = 0; i < (block.items || []).length; i++) {
       const it = block.items[i];
-      const blockNo = b + 1;
-      const pos = i + 1;
+      const w = String(it.word || "").trim();
+      if (!w) continue;
+
+      // Bild kommt EXAKT aus Mapping. Falls kein Mapping existiert, fallback auf it.image.
+      const mapped = imageSrcForWord(w);
+      const img = mapped || (it.image || "");
+
       quizPool.push({
-        // stabiler key:
-        qid: `b${blockNo}p${pos}`,
-        blockNo,
-        pos,
-        word: it.word,
-        // Bild ist fest:
-        img: getBlockImagePath(blockNo, pos),
-        // Fallback (falls assets fehlen):
+        qid: `b${b + 1}i${i + 1}:${wordKeyForMap(w)}`,
+        word: w,
+        img,
         fallbackImg: it.image || ""
       });
+
+      if (quizPool.length >= 12) break;
+    }
+    if (quizPool.length >= 12) break;
+  }
+
+  // Falls Lesson weniger als 12 hatte: zusätzlich aus Mapping auffüllen (stabil)
+  if (quizPool.length < 12) {
+    const existing = new Set(quizPool.map(x => wordKeyForMap(x.word)));
+    for (const [k, file] of Object.entries(WORD_TO_IMAGE_FILE)) {
+      if (existing.has(k)) continue;
+      quizPool.push({
+        qid: `map:${k}`,
+        word: k, // wird nicht angezeigt, nur gesprochen -> wir ersetzen beim Sprechen später
+        img: IMAGE_DIR + file,
+        fallbackImg: ""
+      });
+      if (quizPool.length >= 12) break;
     }
   }
 
@@ -256,70 +311,79 @@ function buildGlobalQuizPool() {
 
 // ----------------- SENTENCES (Phase 4) -----------------
 function buildSentenceListSimple() {
-  // Einfache Sätze aus den gelernten Wörtern (aus quizPool = 12 Wörter)
-  // Ziel: leicht lesbar, nur aus bekannten Wörtern + Konnektor "et".
-  const words = (quizPool || []).map(x => x.word).filter(Boolean);
+  // Basis: die Wörter aus quizPool (max 12)
+  const words = (quizPool || []).map(x => x.word).filter(Boolean).map(String);
+
   const uniq = [];
   const seen = new Set();
   for (const w of words) {
-    const k = _norm(w);
+    const k = wordKeyForMap(w);
     if (!k || seen.has(k)) continue;
     seen.add(k);
-    uniq.push(w.trim());
+    // Wenn wir aus Mapping aufgefüllt haben, kann word "ecouter" statt "écouter" sein.
+    // Dann nutzen wir eine schöne Display-Form:
+    uniq.push(prettyFrenchWord(w));
   }
 
-  // Mindestens 6–10 Sätze erzeugen
-  const out = [];
+  // Einfache Sätze (kurz, klar)
+  // Wir bauen sie so, dass bekannte Wörter vorkommen.
+  // (Wenn ein Wort fehlt, ist es trotzdem ok — dann bleibt der Satz kurz.)
+  const has = (kw) => seen.has(kw);
 
-  // Paar-Sätze: "X et Y."
-  for (let i = 0; i < uniq.length - 1; i += 2) {
-    const a = uniq[i];
-    const b = uniq[i + 1];
-    if (!a || !b) continue;
-    out.push(`${capFirst(a)} et ${b}.`);
-    if (out.length >= 8) break;
-  }
+  const s = [];
 
-  // Wenn zu wenig: zweite Runde mit anderen Paaren
-  if (out.length < 8) {
-    const shuffled = shuffleArray([...uniq]);
+  if (has("ecouter") && has("repeter")) s.push("Écoute et répète.");
+  if (has("ouvrir") && has("livre")) s.push("Ouvre le livre.");
+  if (has("fermer") && has("livre")) s.push("Ferme le livre.");
+  if (has("lire") && has("page")) s.push("Lis la page.");
+  if (has("ecrire") && has("numero")) s.push("Écris le numéro.");
+  if (has("trouver") && has("tache")) s.push("Trouve la tâche.");
+  if (has("voir") && has("page")) s.push("Vois la page.");
+
+  // Fallback: wenn wenig zusammenkommt, nutze Paar-Sätze mit "et"
+  if (s.length < 8) {
+    const pool = uniq.filter(Boolean);
+    const shuffled = shuffleArray([...pool]);
     for (let i = 0; i < shuffled.length - 1; i += 2) {
-      out.push(`${capFirst(shuffled[i])} et ${shuffled[i + 1]}.`);
-      if (out.length >= 10) break;
+      const a = capFirst(shuffled[i]);
+      const b = shuffled[i + 1];
+      if (!a || !b) continue;
+      s.push(`${a} et ${b}.`);
+      if (s.length >= 10) break;
     }
   }
 
-  // Notfall
-  if (!out.length && uniq.length) out.push(`${capFirst(uniq[0])}.`);
+  if (!s.length && uniq.length) s.push(`${capFirst(uniq[0])}.`);
 
-  // Als Liste speichern
-  sentenceList = out.map((s, idx) => ({ sid: `s${idx+1}`, text: s }));
+  sentenceList = s.map((text, idx) => ({ sid: `s${idx + 1}`, text }));
 }
 
-// ----------------- RENDER SWITCH -----------------
+function prettyFrenchWord(w) {
+  // Nur für Anzeige/Sätze; die Bewertung nutzt trotzdem den echten Satztext.
+  const k = wordKeyForMap(w);
+  const m = {
+    ecouter: "écouter",
+    repeter: "répéter",
+    ecrire: "écrire",
+    numero: "numéro",
+    tache: "tâche"
+  };
+  return m[k] || w;
+}
+
+// ----------------- RENDER -----------------
 function render() {
   if (!lesson) return;
 
-  if (currentPhase === "learn") {
-    renderLearnPhase(lesson.blocks[currentBlockIndex]);
-    return;
-  }
-  if (currentPhase === "shuffle") {
-    renderShufflePhase(lesson.blocks[currentBlockIndex]);
-    return;
-  }
-  if (currentPhase === "quiz") {
-    renderGlobalQuizPhase();
-    return;
-  }
-  if (currentPhase === "sentences") {
-    renderSentencePhase();
-    return;
-  }
+  if (currentPhase === "learn") return renderLearnPhase(lesson.blocks[currentBlockIndex]);
+  if (currentPhase === "shuffle") return renderShufflePhase(lesson.blocks[currentBlockIndex]);
+  if (currentPhase === "quiz") return renderGlobalQuizPhase();
+  if (currentPhase === "sentences") return renderSentencePhase();
+
   renderEndScreen();
 }
 
-// ----------------- PHASE 1 (Learn + Speak) -----------------
+// ----------------- Phase 1 (Learn + Speak) -----------------
 function renderLearnPhase(block) {
   const item = block.items[currentItemIndex];
   const blockNo = currentBlockIndex + 1;
@@ -450,11 +514,10 @@ function renderLearnPhase(block) {
 
     if (currentItemIndex < block.items.length - 1) {
       currentItemIndex++;
-      render();
-      return;
+      return render();
     }
 
-    // Phase 1 fertig -> Phase 2 (nur für diesen Block)
+    // Phase 1 fertig -> Phase 2
     currentPhase = "shuffle";
     currentItemIndex = 0;
     shuffleOrder = shuffleArray([...block.items]);
@@ -462,7 +525,7 @@ function renderLearnPhase(block) {
   };
 }
 
-// ----------------- PHASE 2 (Block Shuffle / Tippen, 4er Pack) -----------------
+// ----------------- Phase 2 (Tippen 4er Pack, BILDER EXAKT nach Wort) -----------------
 function renderShufflePhase(block) {
   stopAllAudioStates();
 
@@ -473,26 +536,23 @@ function renderShufflePhase(block) {
   }
 
   if (currentItemIndex >= shuffleOrder.length) {
-    // Block-Phase 2 fertig -> nächster Block Phase 1 ODER globales Quiz
-    if (currentBlockIndex < Math.min(QUIZ_BLOCKS, lesson.blocks.length) - 1) {
+    // Block-Phase2 fertig -> nächster Block oder globales Quiz
+    if (currentBlockIndex < lesson.blocks.length - 1 && currentBlockIndex < 2) {
       currentBlockIndex++;
       currentPhase = "learn";
       currentItemIndex = 0;
       shuffleOrder = [];
-      render();
-      return;
+      return render();
     }
 
-    // Alle 3 Blöcke erledigt -> globales Quiz
     currentPhase = "quiz";
     quizIndex = 0;
     quizAttemptsLeft = 3;
     quizTargetOrder = shuffleArray([...quizPool]);
-    render();
-    return;
+    return render();
   }
 
-  const targetItem = shuffleOrder[currentItemIndex];
+  const target = shuffleOrder[currentItemIndex];
   const gridItems = shuffleArray([...block.items]);
 
   appEl.innerHTML = `
@@ -506,15 +566,15 @@ function renderShufflePhase(block) {
       <p>Höre das Wort und tippe das richtige Bild.</p>
 
       <div class="icon-grid">
-        ${gridItems.map((it) => `
-          <button class="icon-card" data-id="${it.id}">
-            <img
-              src="${getItemQuizImageSrc(block, blockNo, it)}"
-              data-fallback="${escapeHtml(it.image || "")}"
-              alt=""
-            >
-          </button>
-        `).join("")}
+        ${gridItems.map((it) => {
+          const src = imageSrcForWord(it.word) || (it.image || "");
+          const fb = it.image || "";
+          return `
+            <button class="icon-card" data-word="${escapeHtml(it.word)}" aria-label="Option">
+              <img src="${src}" data-fallback="${escapeHtml(fb)}" alt="">
+            </button>
+          `;
+        }).join("")}
       </div>
 
       <div class="controls">
@@ -528,14 +588,14 @@ function renderShufflePhase(block) {
   attachImgFallbacks();
 
   const feedbackEl = document.getElementById("shuffle-feedback");
-  const playTarget = () => speakWord(targetItem.word, 1.0);
+  const playTarget = () => speakWord(target.word, 1.0);
   document.getElementById("btn-play-target").onclick = playTarget;
   playTarget();
 
   appEl.querySelectorAll(".icon-card").forEach((btn) => {
     btn.onclick = () => {
-      const id = btn.getAttribute("data-id");
-      if (id !== targetItem.id) {
+      const w = btn.getAttribute("data-word") || "";
+      if (_norm(w) !== _norm(target.word)) {
         feedbackEl.textContent = "❌ Falsch. Tippe ein anderes Bild.";
         return;
       }
@@ -548,33 +608,28 @@ function renderShufflePhase(block) {
   });
 }
 
-// ----------------- PHASE 3 (GLOBAL Hör-Quiz, 12er Pool, immer 4er Pack, no labels) -----------------
+// ----------------- Phase 3 (Global Hör-Quiz, 12 Bilder, 4er Pack, ohne Beschriftung) -----------------
 function renderGlobalQuizPhase() {
   stopAllAudioStates();
 
   if (!quizTargetOrder?.length) quizTargetOrder = shuffleArray([...quizPool]);
 
   if (quizIndex >= quizTargetOrder.length) {
-    // Quiz fertig -> Satz-Übung
     currentPhase = "sentences";
     sentenceIndex = 0;
-    render();
-    return;
+    return render();
   }
 
   const target = quizTargetOrder[quizIndex];
 
-  // 3 Distraktoren aus den übrigen 11 wählen
   const others = quizPool.filter((x) => x.qid !== target.qid);
   const distractors = takeN(shuffleArray(others), 3);
-
-  // 4er-Pack mischen
   const pack = shuffleArray([target, ...distractors]);
 
   appEl.innerHTML = `
     <div class="screen screen-quiz">
       <div class="meta">
-        <div class="badge">Phase 3 – Hör-Quiz (12 Bilder)</div>
+        <div class="badge">Phase 3 – Hör-Quiz</div>
         <div class="badge">Aufgabe ${quizIndex + 1} von ${quizTargetOrder.length}</div>
         <div class="badge">Versuche: ${quizAttemptsLeft}</div>
       </div>
@@ -584,12 +639,8 @@ function renderGlobalQuizPhase() {
 
       <div class="icon-grid">
         ${pack.map((it) => `
-          <button class="icon-card" data-qid="${it.qid}">
-            <img
-              src="${it.img}"
-              data-fallback="${escapeHtml(it.fallbackImg || "")}"
-              alt=""
-            >
+          <button class="icon-card" data-qid="${it.qid}" aria-label="Option">
+            <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="">
           </button>
         `).join("")}
       </div>
@@ -605,7 +656,7 @@ function renderGlobalQuizPhase() {
   attachImgFallbacks();
 
   const feedbackEl = document.getElementById("quiz-feedback");
-  const playTarget = () => speakWord(target.word, 1.0);
+  const playTarget = () => speakWord(prettyFrenchWord(target.word), 1.0);
   document.getElementById("btn-play-quiz").onclick = playTarget;
   playTarget();
 
@@ -642,19 +693,12 @@ function renderGlobalQuizPhase() {
   });
 }
 
-// ----------------- PHASE 4 (Satz-Übung: nachsprechen, Score ≥85% zum Weiter) -----------------
+// ----------------- Phase 4 (Sätze nachsprechen, Score ≥ 85%) -----------------
 function renderSentencePhase() {
   stopAllAudioStates();
 
-  if (!sentenceList?.length) {
-    currentPhase = "end";
-    renderEndScreen();
-    return;
-  }
-
-  if (sentenceIndex >= sentenceList.length) {
-    renderEndScreen();
-    return;
+  if (!sentenceList?.length || sentenceIndex >= sentenceList.length) {
+    return renderEndScreen();
   }
 
   const s = sentenceList[sentenceIndex];
@@ -662,15 +706,14 @@ function renderSentencePhase() {
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
-        <div class="badge">Phase 4 – Sätze nachsprechen</div>
+        <div class="badge">Phase 4 – Sätze</div>
         <div class="badge">Satz ${sentenceIndex + 1} von ${sentenceList.length}</div>
       </div>
 
-      <h1>Satz-Training</h1>
+      <h1>Satz nachsprechen</h1>
 
       <div class="card card-word" style="text-align:center;">
         <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(s.text)}</div>
-        <div class="word-translation"></div>
       </div>
 
       <div class="controls-audio">
@@ -696,6 +739,7 @@ function renderSentencePhase() {
 
   btnHear.onclick = () => speakWord(s.text, 1.0);
   btnHearSlow.onclick = () => speakWord(s.text, 0.7);
+
   btnNext.disabled = true;
 
   btnSpeak.onclick = async () => {
@@ -789,7 +833,7 @@ function renderEndScreen() {
   stopAllAudioStates();
   appEl.innerHTML = `
     <div class="screen screen-end">
-      <h1>Tag 1 geschafft 🎉</h1>
+      <h1>Tag 1 geschafft</h1>
       <p>Du hast alle Übungen abgeschlossen (Wörter, Quiz, Sätze).</p>
       <button id="btn-repeat" class="btn primary">Tag 1 wiederholen</button>
     </div>
@@ -906,3 +950,4 @@ function shuffleArray(arr) {
 function takeN(arr, n) {
   return arr.slice(0, Math.max(0, n));
 }
+
