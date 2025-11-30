@@ -1,0 +1,275 @@
+{
+  "lesson_id": "W1D1",
+  "title": {
+    "de": "Kurs-Navigation: Buch / Seite / Aufgabe",
+    "en": "Classroom Navigation: Book / Page / Exercise"
+  },
+  "ui_language": "en",
+  "target_language": "de",
+  "difficulty": 1,
+  "target_time_sec": 1200,
+
+  "book_page": {
+    "rule_en": "Audio first: LISTEN → REPEAT → ACT → REVIEW. All tapping happens in the app.",
+    "words_table": [
+      { "id": "01", "de": "das Buch", "en": "the book" },
+      { "id": "02", "de": "die Seite", "en": "the page" },
+      { "id": "03", "de": "die Aufgabe", "en": "the exercise / task" },
+      { "id": "04", "de": "die Nummer", "en": "the number" },
+      { "id": "05", "de": "öffnen", "en": "to open" },
+      { "id": "06", "de": "schließen", "en": "to close" },
+      { "id": "07", "de": "finden", "en": "to find" },
+      { "id": "08", "de": "hier", "en": "here" },
+      { "id": "09", "de": "bitte", "en": "please" },
+      { "id": "10", "de": "jetzt", "en": "now" },
+      { "id": "11", "de": "schauen", "en": "to look" },
+      { "id": "12", "de": "zeigen", "en": "to show" }
+    ],
+    "teacher_sentences_table": [
+      { "id": "S1", "de": "Öffnen Sie das Buch.", "en": "Open the book." },
+      { "id": "S2", "de": "Seite zehn.", "en": "Page ten." },
+      { "id": "S3", "de": "Aufgabe zwei.", "en": "Exercise two." },
+      { "id": "S4", "de": "Schauen Sie hier.", "en": "Look here." },
+      { "id": "S5", "de": "Finden Sie die Seite.", "en": "Find the page." },
+      { "id": "S6", "de": "Jetzt, bitte.", "en": "Now, please." }
+    ],
+    "mini_check_en": [
+      "I recognize 3 key words in audio (book/page/exercise).",
+      "I can repeat 2 sentences clearly.",
+      "I can tap the correct meaning in the app."
+    ]
+  },
+
+  "audio_map": {
+    "type": "path_template",
+    "word_normal": "/audio/{lesson_id}/words/{id}.mp3",
+    "word_slow": "/audio/{lesson_id}/words/{id}_slow.mp3",
+    "sentence_normal": "/audio/{lesson_id}/sentences/{id}.mp3",
+    "sentence_slow": "/audio/{lesson_id}/sentences/{id}_slow.mp3"
+  },
+
+  "repeat": {
+    "scoring": {
+      "stt_locale": "de-DE",
+      "correct_threshold": 0.78,
+      "almost_threshold": 0.62,
+      "min_speech_ms": 700,
+      "feedback_templates_en": {
+        "correct": "Correct ✅",
+        "almost": "Good! Try again, slower.",
+        "try_again": "Try again 🔁. Listen once more, then repeat."
+      }
+    },
+    "speak_items": [
+      { "type": "word", "ref_id": "01", "hint_en": "Slow and clear." },
+      { "type": "word", "ref_id": "02", "hint_en": "Say it in 2 parts: Sei-te." },
+      { "type": "word", "ref_id": "03", "hint_en": "Say: AUF-ga-be (3 parts)." },
+      { "type": "word", "ref_id": "04", "hint_en": "Clear ending: Num-mer." },
+      { "type": "word", "ref_id": "05", "hint_en": "Listen again, then repeat." },
+      { "type": "word", "ref_id": "06", "hint_en": "Focus on 'sch' at the start." },
+      { "type": "word", "ref_id": "09", "hint_en": "Short and soft: bit-te." },
+      { "type": "word", "ref_id": "10", "hint_en": "Clear 'ts' at the end." },
+      { "type": "sentence", "ref_id": "S1", "hint_en": "Repeat in one smooth line." },
+      { "type": "sentence", "ref_id": "S4", "hint_en": "Clear 'sch' in schauen." }
+    ]
+  },
+
+  "act": {
+    "icons": {
+      "ICON_BOOK": "Book",
+      "ICON_PAGE": "Page",
+      "ICON_EXERCISE": "Exercise",
+      "ICON_NUMBER": "Number"
+    },
+    "feedback_en": {
+      "correct": "Correct ✅",
+      "wrong": "Not this one. Listen again."
+    },
+    "items": [
+      {
+        "id": "A1",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "01" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["the book", "the page", "the exercise"],
+        "correct_index": 0
+      },
+      {
+        "id": "A2",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "02" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["the page", "the book", "the number"],
+        "correct_index": 0
+      },
+      {
+        "id": "A3",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "03" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["the exercise / task", "the page", "the number"],
+        "correct_index": 0
+      },
+      {
+        "id": "A4",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "04" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["the number", "the page", "the book"],
+        "correct_index": 0
+      },
+      {
+        "id": "A5",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "05" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["to open", "to close", "to find"],
+        "correct_index": 0
+      },
+      {
+        "id": "A6",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "06" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["to close", "to open", "to show"],
+        "correct_index": 0
+      },
+      {
+        "id": "A7",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "07" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["to find", "to look", "to show"],
+        "correct_index": 0
+      },
+      {
+        "id": "A8",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "08" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["here", "now", "please"],
+        "correct_index": 0
+      },
+      {
+        "id": "A9",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "09" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["please", "now", "here"],
+        "correct_index": 0
+      },
+      {
+        "id": "A10",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "word", "id": "10" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["now", "please", "here"],
+        "correct_index": 0
+      },
+
+      {
+        "id": "B1",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "sentence", "id": "S1" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["Open the book.", "Find the page.", "Look here."],
+        "correct_index": 0
+      },
+      {
+        "id": "B2",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "sentence", "id": "S4" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["Look here.", "Open the book.", "Now, please."],
+        "correct_index": 0
+      },
+      {
+        "id": "B3",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "sentence", "id": "S5" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["Find the page.", "Page ten.", "Exercise two."],
+        "correct_index": 0
+      },
+      {
+        "id": "B4",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "sentence", "id": "S6" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["Now, please.", "Again, please.", "Look here."],
+        "correct_index": 0
+      },
+      {
+        "id": "B5",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "sentence", "id": "S2" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["Page ten.", "Page two.", "Exercise ten."],
+        "correct_index": 0
+      },
+      {
+        "id": "B6",
+        "mode": "audio_to_choice_en",
+        "prompt_ref": { "type": "sentence", "id": "S3" },
+        "question_en": "Tap the correct meaning.",
+        "choices_en": ["Exercise two.", "Page two.", "Exercise ten."],
+        "correct_index": 0
+      },
+
+      {
+        "id": "C1",
+        "mode": "audio_to_icon",
+        "prompt_ref": { "type": "sentence", "id": "S1" },
+        "question_en": "Tap the correct icon.",
+        "choices": ["ICON_BOOK", "ICON_PAGE", "ICON_EXERCISE", "ICON_NUMBER"],
+        "correct_index": 0
+      },
+      {
+        "id": "C2",
+        "mode": "audio_to_icon",
+        "prompt_ref": { "type": "word", "id": "02" },
+        "question_en": "Tap the correct icon.",
+        "choices": ["ICON_BOOK", "ICON_PAGE", "ICON_EXERCISE", "ICON_NUMBER"],
+        "correct_index": 1
+      },
+      {
+        "id": "C3",
+        "mode": "audio_to_icon",
+        "prompt_ref": { "type": "word", "id": "03" },
+        "question_en": "Tap the correct icon.",
+        "choices": ["ICON_BOOK", "ICON_PAGE", "ICON_EXERCISE", "ICON_NUMBER"],
+        "correct_index": 2
+      },
+      {
+        "id": "C4",
+        "mode": "audio_to_number",
+        "prompt_ref": { "type": "sentence", "id": "S2" },
+        "question_en": "Tap the number you hear.",
+        "choices_numbers": [2, 10, 12],
+        "correct_index": 1
+      }
+    ]
+  },
+
+  "review": {
+    "description_en": "We repeat only your mistakes (fast).",
+    "mastery_levels": { "min": 0, "max": 3 },
+    "rules": {
+      "on_correct": "level_plus_1",
+      "on_wrong": "level_reset_0"
+    },
+    "sequence": [
+      { "step": "listen_only", "max_items": 8, "source": "wrong_items" },
+      { "step": "act_retry", "max_items": 8, "source": "wrong_items", "shuffle_choices": true },
+      { "step": "repeat_retry", "max_items": 3, "source": "wrong_pronunciation_items", "use_slow_audio": true }
+    ]
+  },
+
+  "end_screen": {
+    "show": ["mastered_top3", "weak_top3", "pronunciation_score"],
+    "cta_buttons": [
+      { "id": "repeat_weak_2min", "label_en": "Repeat weak items (2 min)" },
+      { "id": "replay_lesson", "label_en": "Replay lesson" }
+    ]
+  }
+}
