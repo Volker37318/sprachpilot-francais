@@ -1,13 +1,16 @@
 // src/app.js – Vor-A1 / Klassensprache Französisch
 // Flow: Lernen → Bilder & Tippen → Hör-Quiz
-// Aussprache-Check FINAL: Browser -> Netlify Function -> Koyeb (/pronounce) -> Azure
-// FIX: WAV PCM16 16k Recorder + sendet REINES base64 (ohne data:audio/wav;base64, prefix)
+// Aussprache-Check (JETZT OHNE SERVER): Browser-Spracherkennung (Web Speech API) + einfacher Text-Score
+// Hinweis: Funktioniert am besten in Chrome/Edge. Kein Koyeb/Netlify für die Auswertung nötig.
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
 
-// Frontend ruft NICHT direkt Koyeb auf, sondern die Netlify Function (same-origin)
+// Frontend würde sonst die Netlify Function rufen:
 const PRONOUNCE_URL_DEFAULT = "/.netlify/functions/pronounce";
+
+// >>> Schalter: jetzt lokal (ohne Koyeb)
+const PRONOUNCE_MODE = "browser"; // "browser" | "server"
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -29,13 +32,127 @@ let ttsSupported = "speechSynthesis" in window;
 let ttsVoices = [];
 let ttsVoice = null;
 
-// Mic / Pronounce state (WAV16k Recorder)
+// Mic / Pronounce state
 let micRecording = false;
-let wavRec = null;
 let autoStopTimer = null;
 
-// ---- Self-check: Proxy erreichbar? (nur Info, kein Blocker) ----
+// ----------------- LOCAL ASR (Browser SpeechRecognition) -----------------
+let _sr = null;
+let _srFinal = "";
+let _srResolve = null;
+
+function speechRecAvailable() {
+  return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
+}
+
+function startBrowserASR(lang = "fr-FR") {
+  if (!speechRecAvailable()) return false;
+
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  _srFinal = "";
+  _sr = new SR();
+  _sr.lang = lang;
+  _sr.interimResults = true;
+  _sr.continuous = true;
+  _sr.maxAlternatives = 1;
+
+  _sr.onresult = (e) => {
+    let add = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      const t = (r && r[0] && r[0].transcript) ? r[0].transcript : "";
+      if (r.isFinal) add += " " + t;
+    }
+    if (add.trim()) _srFinal = (_srFinal + " " + add).trim();
+  };
+
+  _sr.onerror = (e) => {
+    console.warn("[PRONOUNCE][ASR] error:", e?.error || e);
+  };
+
+  _sr.onend = () => {
+    try {
+      if (_srResolve) {
+        const out = (_srFinal || "").trim();
+        _srResolve(out);
+        _srResolve = null;
+      }
+    } finally {
+      _sr = null;
+    }
+  };
+
+  try {
+    _sr.start();
+    return true;
+  } catch (e) {
+    console.warn("[PRONOUNCE][ASR] start failed:", e);
+    _sr = null;
+    return false;
+  }
+}
+
+function stopBrowserASR() {
+  return new Promise((resolve) => {
+    if (!_sr) return resolve((_srFinal || "").trim());
+    _srResolve = resolve;
+    try { _sr.stop(); } catch { resolve((_srFinal || "").trim()); }
+  });
+}
+
+// --- simple scoring (Text-Ähnlichkeit) ---
+function _norm(s) {
+  return String(s || "")
+    .toLowerCase()
+    .normalize("NFC")
+    .replace(/[’']/g, "'")
+    .replace(/[^\p{L}\p{N}' -]/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function _levenshtein(a, b) {
+  a = _norm(a); b = _norm(b);
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
+      );
+    }
+  }
+  return dp[m][n];
+}
+
+function _similarityScore(target, heard) {
+  const A = _norm(target), B = _norm(heard);
+  if (!A || !B) return 0;
+  const dist = _levenshtein(A, B);
+  const maxLen = Math.max(A.length, B.length) || 1;
+  const sim = 1 - dist / maxLen;
+  return Math.max(0, Math.min(1, sim));
+}
+
+function _grade(score) {
+  return score >= 90 ? "excellent" :
+         score >= 75 ? "good" :
+         score >= 60 ? "ok" : "try_again";
+}
+
+// ---- Self-check: Proxy erreichbar? (nur wenn PRONOUNCE_MODE === "server") ----
 (async function pingPronounceProxy() {
+  if (PRONOUNCE_MODE !== "server") {
+    console.log("[PRONOUNCE] Local mode (browser ASR) active.");
+    return;
+  }
   try {
     const r = await fetch(PRONOUNCE_URL_DEFAULT, { cache: "no-store" });
     const t = await r.text();
@@ -120,7 +237,6 @@ function render() {
 }
 
 // Phase 1: Icon + Wort + Hören + Aussprache prüfen
-
 function renderLearnPhase(block) {
   const item = block.items[currentItemIndex];
 
@@ -175,22 +291,29 @@ function renderLearnPhase(block) {
 
       clearAutoStop();
       btnSpeak.disabled = true;
-      setSpeakFeedback("Verarbeite Audio…");
+      setSpeakFeedback("Verarbeite…");
 
-      // stop wav recorder -> DataURL (data:audio/wav;base64,...)
-      const audioDataUrl = await stopMicGetWavDataUrl();
+      let result;
+
+      if (PRONOUNCE_MODE === "browser") {
+        const recognizedText = await stopBrowserASR();
+        const sim = _similarityScore(item.word, recognizedText);
+        const overallScore = Math.round(sim * 100);
+        result = {
+          ok: true,
+          overallScore,
+          grade: _grade(overallScore),
+          details: { recognizedText }
+        };
+      } else {
+        // Server-Mode (falls du später wieder zurück willst)
+        const audioDataUrl = await stopMicGetWavDataUrl();
+        const audioBase64 = toPureBase64(audioDataUrl);
+        result = await callPronounce({ targetText: item.word, language: "fr-FR", audioBase64 });
+      }
 
       micRecording = false;
       btnSpeak.textContent = "🎤 Ich spreche";
-
-      // ✅ WICHTIG: Nur Base64 (ohne "data:audio/wav;base64,")
-      const audioBase64 = toPureBase64(audioDataUrl);
-
-      const result = await callPronounce({
-        targetText: item.word,
-        language: "fr-FR",
-        audioBase64
-      });
 
       const overall = result?.overallScore ?? 0;
       const recText = result?.details?.recognizedText || "";
@@ -211,10 +334,26 @@ function renderLearnPhase(block) {
     try {
       if (!micRecording) {
         stopMicIfNeeded();
-        setSpeakFeedback("Aufnahme läuft… sprich kurz (ca. 2–3 Sekunden). Dann Stop drücken.");
         btnNext.disabled = true;
 
-        await startMicWav16k();
+        if (PRONOUNCE_MODE === "browser") {
+          if (!speechRecAvailable()) {
+            setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.");
+            btnNext.disabled = false;
+            return;
+          }
+          setSpeakFeedback("Spracherkennung läuft… sprich kurz (ca. 2–3 Sekunden). Dann Stop drücken.");
+          const started = startBrowserASR("fr-FR");
+          if (!started) {
+            setSpeakFeedback("Spracherkennung konnte nicht gestartet werden. Bitte neu laden und erneut versuchen.");
+            btnNext.disabled = false;
+            return;
+          }
+        } else {
+          setSpeakFeedback("Aufnahme läuft… sprich kurz (ca. 2–3 Sekunden). Dann Stop drücken.");
+          await startMicWav16k();
+        }
+
         micRecording = true;
         btnSpeak.textContent = "⏹ Stop";
 
@@ -259,7 +398,6 @@ function renderLearnPhase(block) {
 }
 
 // Phase 2: Bilder gemischt + richtiges Icon
-
 function renderShufflePhase(block) {
   stopMicIfNeeded();
   const items = shuffleArray([...block.items]);
@@ -318,7 +456,6 @@ function renderShufflePhase(block) {
 }
 
 // Phase 3: Hör-Quiz mit 3 Versuchen
-
 function renderQuizPhase(block) {
   stopMicIfNeeded();
   const items = shuffleArray([...block.items]);
@@ -400,7 +537,6 @@ function renderQuizPhase(block) {
 }
 
 // Endscreen
-
 function renderEndScreen() {
   stopMicIfNeeded();
   appEl.innerHTML = `
@@ -464,13 +600,10 @@ function speakWord(text, rate = 1.0) {
   }
 }
 
-// ----------------- Pronounce -----------------
-
-// ----------------- Pronounce -----------------
+// ----------------- Pronounce (SERVER MODE – bleibt drin, wird aber aktuell nicht genutzt) -----------------
 async function callPronounce({ targetText, language, audioBase64 }) {
   const pureB64 = toPureBase64(audioBase64);
 
-  // Debug: sofort sehen, wohin und was geschickt wird
   console.log("[PRONOUNCE] POST →", PRONOUNCE_URL_DEFAULT);
   console.log("[PRONOUNCE] target:", targetText, "| lang:", language, "| b64.len:", pureB64?.length);
 
@@ -487,9 +620,8 @@ async function callPronounce({ targetText, language, audioBase64 }) {
   });
 
   const ct = resp.headers.get("content-type") || "";
-  const raw = await resp.text(); // <- WICHTIG: auch HTML/Text bei 503 sichtbar machen
+  const raw = await resp.text();
 
-  // Versuche JSON zu parsen, falls es JSON ist
   let json = {};
   if (ct.includes("application/json")) {
     try { json = JSON.parse(raw || "{}"); } catch { json = {}; }
@@ -503,7 +635,6 @@ async function callPronounce({ targetText, language, audioBase64 }) {
     );
   }
 
-  // Erfolg: JSON zurückgeben (wenn’s JSON ist), sonst raw
   return ct.includes("application/json") ? (json || {}) : { ok: true, raw };
 }
 
@@ -514,8 +645,8 @@ function toPureBase64(maybeDataUrl) {
   return s;
 }
 
-
-// --- WAV16k Recorder ---
+// --- WAV16k Recorder (SERVER MODE) ---
+let wavRec = null;
 
 async function startMicWav16k() {
   stopMicIfNeeded();
@@ -541,10 +672,18 @@ function stopMicIfNeeded() {
   try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
   autoStopTimer = null;
 
+  // stop ASR (wenn läuft)
+  if (_sr) {
+    try { _sr.stop(); } catch {}
+    _sr = null;
+  }
+
+  // stop WAV recorder (wenn im server mode genutzt)
   if (wavRec && typeof wavRec.stop === "function") {
     try { wavRec.stop(); } catch {}
   }
   wavRec = null;
+
   micRecording = false;
 }
 
