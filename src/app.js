@@ -4,14 +4,22 @@
 // Block 2: Phase 1 → Phase 2
 // Block 3: Phase 1 → Phase 2
 // Danach: Phase 3 (Globales Hör-Quiz aus 12 Bildern, 4er Pack, ohne Beschriftung)
-// Danach: Phase 4 (Sätze nachsprechen, Score ≥ 85% zum Weiter)
+// Danach: Phase 4 (Sätze nachsprechen)
 // Danach: Ende
+//
+// Feinabstimmung (User):
+// - "Weiter" entfernt
+// - Nur bei 100%: 4 Sekunden anzeigen, dann automatisch weiter
+// - Nach 5x falsch: Button "Später noch einmal" aktiv (orange-gelber Verlauf),
+//                   "Ich spreche" wird grau & passiv
+// - Verriegelung: Hören/Langsam dürfen NICHT während Mic oder TTS
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
 
-const PASS_THRESHOLD = 85;
-const FAILS_FOR_SKIP = 5;
+const PASS_EXACT = 100;          // nur bei 100% automatisch weiter
+const FAILS_FOR_SKIP = 5;        // nach 5x falsch -> Skip-Button aktiv
+const AUTO_ADVANCE_MS = 4000;    // 4 Sekunden Anzeige bei 100%
 
 const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // => /assets/images/W1D1/
 
@@ -51,6 +59,7 @@ let ttsActive = false;
 // ASR state
 let micRecording = false;
 let autoStopTimer = null;
+let advanceTimer = null;
 
 // Fail counter (pro aktuellem Wort/Satz)
 let currentFailCount = 0;
@@ -62,8 +71,14 @@ function refreshLocks() { try { _uiRefreshLocks && _uiRefreshLocks(); } catch {}
 
 const ARTICLES = new Set(["le", "la", "les", "un", "une", "des", "du", "de", "d", "l"]);
 
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+const BTN_GRAD = "background: linear-gradient(135deg,#ff8a00,#ffd54a); border:1px solid rgba(0,0,0,.14); color:#1b1b1b; font-weight:900;";
+const BTN_GRAY = "background:#cbd5e1; border:1px solid rgba(0,0,0,.12); color:#64748b; font-weight:900; cursor:not-allowed; filter:grayscale(1);";
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+function clearAdvanceTimer() {
+  try { if (advanceTimer) clearTimeout(advanceTimer); } catch {}
+  advanceTimer = null;
 }
 
 // ----------------- WORD → IMAGE (HARDCODED) -----------------
@@ -286,8 +301,9 @@ function scoreSpeech(target, heard) {
   const tCan = canonicalFrenchForScoring(target);
   const hCan = canonicalFrenchForScoring(heard);
 
+  // LOCK: Wenn Kanonisch identisch -> 100 (z.B. "Ferme le livre" vs "fermer le livre")
   if (tCan && hCan && tCan === hCan) {
-    return { overall: 100, grade: "excellent", pass: true, exactLoose: true };
+    return { overall: 100, grade: "excellent", pass100: true };
   }
 
   const cs = _charSimilarity(tCan || target, hCan || heard);
@@ -298,8 +314,7 @@ function scoreSpeech(target, heard) {
   return {
     overall,
     grade: overall >= 90 ? "excellent" : overall >= 75 ? "good" : overall >= 60 ? "ok" : "try_again",
-    pass: overall >= PASS_THRESHOLD,
-    exactLoose: false
+    pass100: overall >= PASS_EXACT
   };
 }
 
@@ -326,6 +341,7 @@ async function loadLesson(lang, lessonId) {
 }
 
 function startLesson() {
+  clearAdvanceTimer();
   currentBlockIndex = 0;
   currentPhase = "learn";
   currentItemIndex = 0;
@@ -335,6 +351,29 @@ function startLesson() {
   sentenceIndex = 0;
   currentFailCount = 0;
   render();
+}
+
+function advanceFromLearn(block) {
+  stopAllAudioStates();
+  clearAdvanceTimer();
+
+  if (currentItemIndex < block.items.length - 1) {
+    currentItemIndex++;
+    return render();
+  }
+
+  currentPhase = "shuffle";
+  currentItemIndex = 0;
+  shuffleOrder = shuffleArray([...block.items]);
+  render();
+}
+
+function advanceFromSentence() {
+  stopAllAudioStates();
+  clearAdvanceTimer();
+
+  sentenceIndex++;
+  renderSentencePhase();
 }
 
 // ----------------- QUIZ POOL (12) -----------------
@@ -397,21 +436,6 @@ function buildSentenceList() {
   if (has("voir") && has("page"))      list.push({ text: "Vois la page.", de: "Sieh die Seite." });
   if (has("repeter") && has("numero")) list.push({ text: "Répète le numéro.", de: "Wiederhole die Nummer." });
 
-  if (list.length < 6) {
-    const fallback = [
-      { text: "Écoute.", de: "Hör zu." },
-      { text: "Répète.", de: "Wiederhole." },
-      { text: "Lis.", de: "Lies." },
-      { text: "Écris.", de: "Schreibe." },
-      { text: "Ouvre.", de: "Öffne." },
-      { text: "Ferme.", de: "Schließe." }
-    ];
-    for (const s of fallback) {
-      if (list.length >= 6) break;
-      list.push(s);
-    }
-  }
-
   sentenceList = list;
 }
 
@@ -427,8 +451,35 @@ function render() {
   renderEndScreen();
 }
 
+// ------- button style helper -------
+function styleSpeakButtons(btnSpeak, btnSkip) {
+  const skipActive = currentFailCount >= FAILS_FOR_SKIP;
+
+  // Speak: aktiv = Gradient, ab 5 fails grau & disabled
+  if (skipActive) {
+    btnSpeak.disabled = true;
+    btnSpeak.setAttribute("style", BTN_GRAY);
+  } else {
+    btnSpeak.disabled = false;
+    btnSpeak.setAttribute("style", BTN_GRAD);
+  }
+
+  // Skip: ab 5 fails aktiv (Gradient), sonst disabled (grau/optisch neutral)
+  if (skipActive) {
+    btnSkip.disabled = false;
+    btnSkip.setAttribute("style", BTN_GRAD);
+  } else {
+    btnSkip.disabled = true;
+    // leicht neutral, nicht voll grau wie disabled speak
+    btnSkip.setAttribute("style", "background:#eef2ff; border:1px solid rgba(0,0,0,.12); color:#64748b; font-weight:900;");
+  }
+}
+
 // ----------------- Phase 1 (Learn + Speak) -----------------
 function renderLearnPhase(block) {
+  clearAdvanceTimer();
+  stopAllAudioStates();
+
   const item = block.items[currentItemIndex];
   const blockNo = currentBlockIndex + 1;
 
@@ -458,12 +509,8 @@ function renderLearnPhase(block) {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <button id="btn-skip" class="btn secondary" disabled>Später</button>
+        <button id="btn-skip" class="btn secondary" disabled>Später noch einmal</button>
         <div id="speak-feedback" class="feedback" style="flex-basis:100%;"></div>
-      </div>
-
-      <div class="controls-nav">
-        <button id="btn-next" class="btn secondary" disabled>Weiter</button>
       </div>
     </div>
   `;
@@ -472,15 +519,24 @@ function renderLearnPhase(block) {
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
   const btnSkip = document.getElementById("btn-skip");
-  const btnNext = document.getElementById("btn-next");
+
+  styleSpeakButtons(btnSpeak, btnSkip);
 
   const localRefresh = () => {
     const rec = micRecording;
     const tts = ttsActive;
+
+    // Verriegelung: Keine TTS-Buttons während Mic/TTS
     btnHear.disabled = rec || tts;
     btnHearSlow.disabled = rec || tts;
-    btnSpeak.disabled = rec || tts; // während Aufnahme/TTs gesperrt
-    // btnSkip wird über Failcounter gesteuert
+
+    // Während Mic/TTS: Speak/Skip ebenfalls blocken, danach Style wieder setzen
+    if (rec || tts) {
+      btnSpeak.disabled = true;
+      btnSkip.disabled = true;
+    } else {
+      styleSpeakButtons(btnSpeak, btnSkip);
+    }
   };
   setUiRefreshLocks(localRefresh);
   localRefresh();
@@ -488,14 +544,16 @@ function renderLearnPhase(block) {
   btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(item.word, 1.0); };
   btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(item.word, 0.7); };
 
-  btnSkip.onclick = () => {
+  btnSkip.onclick = async () => {
     setSpeakFeedback("Wir kommen später zurück.", null);
-    btnNext.disabled = false;
+    // kurzer Moment für Feedback, dann automatisch weiter
+    await sleep(650);
+    advanceFromLearn(block);
   };
 
   btnSpeak.onclick = async () => {
-    // Kein Klick-Stop mehr: nur Start, dann Auto-Stop nach 3.5s
     if (micRecording) return;
+    if (currentFailCount >= FAILS_FOR_SKIP) return; // Speak ist ab 5 fails passiv
 
     const clearAutoStop = () => {
       try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
@@ -514,22 +572,34 @@ function renderLearnPhase(block) {
       micRecording = false;
       refreshLocks();
 
-      if (!res.pass) {
-        currentFailCount++;
+      if (!res.pass100) currentFailCount++;
+
+      if (res.pass100) {
+        setSpeakFeedback(
+          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Perfekt!`,
+          true
+        );
+
+        // 4 Sekunden anzeigen, dann automatisch weiter
+        clearAdvanceTimer();
+        advanceTimer = setTimeout(() => {
+          advanceFromLearn(block);
+        }, AUTO_ADVANCE_MS);
+
+        return;
       }
 
-      // Skip erst nach 5x falsch
+      // nicht 100%
       if (currentFailCount >= FAILS_FOR_SKIP) {
-        btnSkip.disabled = false;
+        // Speak grau, Skip aktiv
+        styleSpeakButtons(btnSpeak, btnSkip);
       }
-
-      btnNext.disabled = !res.pass;
 
       setSpeakFeedback(
         `Aussprache: ${res.overall}% (${res.grade})` +
-        (recognizedText ? ` · Erkannt: „${recognizedText}“` : " · Erkannt: (leer)") +
-        (res.pass ? ` · Weiter` : ` · Nochmal (ab ${PASS_THRESHOLD}%) (${currentFailCount}/${FAILS_FOR_SKIP})`),
-        res.pass
+        ` · Erkannt: „${recognizedText || "(leer)"}“` +
+        ` · Nochmal (${currentFailCount}/${FAILS_FOR_SKIP})`,
+        false
       );
     };
 
@@ -541,9 +611,9 @@ function renderLearnPhase(block) {
         return;
       }
 
-      setSpeakFeedback("Sprich jetzt. Die Aufnahme stoppt automatisch.", null);
-      btnNext.disabled = true;
+      setSpeakFeedback("Sprich jetzt. Aufnahme stoppt automatisch.", null);
 
+      // TTS aus, damit Mic nicht die Stimme einsammelt
       try { window.speechSynthesis.cancel(); } catch {}
       ttsActive = false;
       refreshLocks();
@@ -578,25 +648,13 @@ function renderLearnPhase(block) {
       setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
     }
   };
-
-  btnNext.onclick = () => {
-    stopAllAudioStates();
-
-    if (currentItemIndex < block.items.length - 1) {
-      currentItemIndex++;
-      return render();
-    }
-
-    currentPhase = "shuffle";
-    currentItemIndex = 0;
-    shuffleOrder = shuffleArray([...block.items]);
-    render();
-  };
 }
 
 // ----------------- Phase 2 (Tippen) -----------------
 function renderShufflePhase(block) {
+  clearAdvanceTimer();
   stopAllAudioStates();
+
   const blockNo = currentBlockIndex + 1;
 
   if (!shuffleOrder || shuffleOrder.length !== block.items.length) {
@@ -678,6 +736,7 @@ function renderShufflePhase(block) {
 
 // ----------------- Phase 3 (Global Quiz) -----------------
 function renderGlobalQuizPhase() {
+  clearAdvanceTimer();
   stopAllAudioStates();
 
   if (!quizTargetOrder?.length) quizTargetOrder = shuffleArray([...quizPool]);
@@ -762,6 +821,7 @@ function renderGlobalQuizPhase() {
 
 // ----------------- Phase 4 (Sätze) -----------------
 function renderSentencePhase() {
+  clearAdvanceTimer();
   stopAllAudioStates();
 
   if (!sentenceList?.length || sentenceIndex >= sentenceList.length) {
@@ -794,12 +854,8 @@ function renderSentencePhase() {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <button id="btn-skip" class="btn secondary" disabled>Später</button>
+        <button id="btn-skip" class="btn secondary" disabled>Später noch einmal</button>
         <div id="speak-feedback" class="feedback" style="flex-basis:100%;"></div>
-      </div>
-
-      <div class="controls-nav">
-        <button id="btn-next" class="btn secondary" disabled>Weiter</button>
       </div>
     </div>
   `;
@@ -808,14 +864,22 @@ function renderSentencePhase() {
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
   const btnSkip = document.getElementById("btn-skip");
-  const btnNext = document.getElementById("btn-next");
+
+  styleSpeakButtons(btnSpeak, btnSkip);
 
   const localRefresh = () => {
     const rec = micRecording;
     const tts = ttsActive;
+
     btnHear.disabled = rec || tts;
     btnHearSlow.disabled = rec || tts;
-    btnSpeak.disabled = rec || tts;
+
+    if (rec || tts) {
+      btnSpeak.disabled = true;
+      btnSkip.disabled = true;
+    } else {
+      styleSpeakButtons(btnSpeak, btnSkip);
+    }
   };
   setUiRefreshLocks(localRefresh);
   localRefresh();
@@ -823,13 +887,15 @@ function renderSentencePhase() {
   btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(s.text, 1.0); };
   btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(s.text, 0.7); };
 
-  btnSkip.onclick = () => {
+  btnSkip.onclick = async () => {
     setSpeakFeedback("Wir kommen später zurück.", null);
-    btnNext.disabled = false;
+    await sleep(650);
+    advanceFromSentence();
   };
 
   btnSpeak.onclick = async () => {
     if (micRecording) return;
+    if (currentFailCount >= FAILS_FOR_SKIP) return;
 
     const clearAutoStop = () => {
       try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
@@ -848,21 +914,31 @@ function renderSentencePhase() {
       micRecording = false;
       refreshLocks();
 
-      if (!res.pass) {
-        currentFailCount++;
+      if (!res.pass100) currentFailCount++;
+
+      if (res.pass100) {
+        setSpeakFeedback(
+          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Perfekt!`,
+          true
+        );
+
+        clearAdvanceTimer();
+        advanceTimer = setTimeout(() => {
+          advanceFromSentence();
+        }, AUTO_ADVANCE_MS);
+
+        return;
       }
 
       if (currentFailCount >= FAILS_FOR_SKIP) {
-        btnSkip.disabled = false;
+        styleSpeakButtons(btnSpeak, btnSkip);
       }
-
-      btnNext.disabled = !res.pass;
 
       setSpeakFeedback(
         `Aussprache: ${res.overall}% (${res.grade})` +
-        (recognizedText ? ` · Erkannt: „${recognizedText}“` : " · Erkannt: (leer)") +
-        (res.pass ? ` · Weiter` : ` · Nochmal (ab ${PASS_THRESHOLD}%) (${currentFailCount}/${FAILS_FOR_SKIP})`),
-        res.pass
+        ` · Erkannt: „${recognizedText || "(leer)"}“` +
+        ` · Nochmal (${currentFailCount}/${FAILS_FOR_SKIP})`,
+        false
       );
     };
 
@@ -874,8 +950,7 @@ function renderSentencePhase() {
         return;
       }
 
-      setSpeakFeedback("Sprich jetzt. Die Aufnahme stoppt automatisch.", null);
-      btnNext.disabled = true;
+      setSpeakFeedback("Sprich jetzt. Aufnahme stoppt automatisch.", null);
 
       try { window.speechSynthesis.cancel(); } catch {}
       ttsActive = false;
@@ -911,16 +986,11 @@ function renderSentencePhase() {
       setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
     }
   };
-
-  btnNext.onclick = () => {
-    stopAllAudioStates();
-    sentenceIndex++;
-    renderSentencePhase();
-  };
 }
 
 // ----------------- END -----------------
 function renderEndScreen() {
+  clearAdvanceTimer();
   stopAllAudioStates();
   appEl.innerHTML = `
     <div class="screen screen-end">
@@ -961,7 +1031,7 @@ function initTTS() {
 function speakWord(text, rate = 1.0) {
   if (!ttsSupported) return;
   if (!text) return;
-  if (micRecording) return; // Verriegelung: keine TTS während Aufnahme
+  if (micRecording) return;
 
   try {
     window.speechSynthesis.cancel();
@@ -975,18 +1045,9 @@ function speakWord(text, rate = 1.0) {
     }
     utter.rate = rate;
 
-    utter.onstart = () => {
-      ttsActive = true;
-      refreshLocks();
-    };
-    utter.onend = () => {
-      ttsActive = false;
-      refreshLocks();
-    };
-    utter.onerror = () => {
-      ttsActive = false;
-      refreshLocks();
-    };
+    utter.onstart = () => { ttsActive = true; refreshLocks(); };
+    utter.onend = () => { ttsActive = false; refreshLocks(); };
+    utter.onerror = () => { ttsActive = false; refreshLocks(); };
 
     window.speechSynthesis.speak(utter);
   } catch (e) {
@@ -1024,10 +1085,10 @@ function setSpeakFeedback(text, pass) {
 
   if (pass === true) {
     el.style.color = "#16a34a";
-    el.style.fontWeight = "800";
+    el.style.fontWeight = "900";
   } else if (pass === false) {
     el.style.color = "#dc2626";
-    el.style.fontWeight = "800";
+    el.style.fontWeight = "900";
   } else {
     el.style.color = "";
     el.style.fontWeight = "";
