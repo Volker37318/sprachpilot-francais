@@ -1,5 +1,6 @@
 // src/app.js – Vor-A1 Training (Pack 4) + Container + 3 Tests + Satzphase
-// Fix ASR: kein Timer-Stop mehr -> listenOnce() liefert Text zuverlässig bei onend.
+// Stabiler ASR: SpeechRecognition (wenn vorhanden) + gleichzeitige Audioaufnahme.
+// Wenn SpeechRecognition leer liefert -> Whisper-Fallback mit derselben Aufnahme.
 
 const LESSON_ID = "W1D1";
 const IMAGE_DIR = `/assets/images/${LESSON_ID}/`;
@@ -10,10 +11,17 @@ const FAILS_TO_CONTAINER = 4;
 const TEST_NEED_EACH = 2;
 const TESTC_MAX_FAILS_BEFORE_HINT = 3;
 
+// Training ist Französisch (TTS + ASR)
 const ASR_LANG = "fr-FR";
 const TTS_LANG_PREFIX = "fr";
 
-// ---------- Inhalt ----------
+// Whisper Endpoint (Fallback)
+const WHISPER_URL =
+  (window.WHISPER_URL) ||
+  localStorage.getItem("sp_whisper_url") ||
+  "https://whisper-proxy-w.onrender.com/whisper";
+
+// ---------- Inhalte (12 Bilder) ----------
 const ITEMS = [
   { id: "w01_ich",       word: "je",       de: "ich",        img: "w01_ich.png" },
   { id: "w02_du",        word: "tu",       de: "du",         img: "w02_du.png" },
@@ -121,9 +129,11 @@ function speakWord(text, rate = 1.0) {
     if (ttsVoice) { u.voice = ttsVoice; u.lang = ttsVoice.lang; }
     else { u.lang = ASR_LANG; }
     u.rate = rate;
+
     u.onstart = () => { ttsActive = true; refreshLocks(); };
     u.onend = () => { ttsActive = false; refreshLocks(); };
     u.onerror = () => { ttsActive = false; refreshLocks(); };
+
     window.speechSynthesis.speak(u);
   } catch (e) {
     console.error("TTS error", e);
@@ -132,37 +142,150 @@ function speakWord(text, rate = 1.0) {
   }
 }
 
-// ---------- ASR (Fixed): listenOnce resolves on onend ----------
+// ---------- ASR: Smart (SR + Whisper-Fallback aus gleicher Aufnahme) ----------
 function speechRecAvailable() {
   return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
 
-async function listenOnce(lang = ASR_LANG, maxMs = 5000) {
-  if (!speechRecAvailable()) return { text: "", error: "not_supported" };
+function pickSupportedMime() {
+  const cands = [
+    "audio/webm;codecs=opus",
+    "audio/webm",
+    "audio/ogg;codecs=opus",
+    "audio/ogg"
+  ];
+  for (const m of cands) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
+  }
+  return "";
+}
 
+async function blobToBase64(blob) {
+  const buf = await blob.arrayBuffer();
+  let binary = "";
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
+
+async function transcribeWhisper(blob, languageShort = "fr") {
+  // 1) multipart/form-data Versuch
+  try {
+    const fd = new FormData();
+    fd.append("file", blob, "speech.webm");
+    fd.append("language", languageShort);
+
+    const r = await fetch(WHISPER_URL, { method: "POST", body: fd });
+    const txt = await r.text();
+    let data = {};
+    try { data = JSON.parse(txt); } catch { data = {}; }
+
+    if (!r.ok) throw new Error(data?.error || txt || `HTTP ${r.status}`);
+    const out = (data.text || data.transcript || data.result || "").trim();
+    if (out) return out;
+  } catch (e) {
+    // weiter mit JSON fallback
+  }
+
+  // 2) JSON base64 Versuch (falls dein Proxy so gebaut ist)
+  const b64 = await blobToBase64(blob);
+  const r2 = await fetch(WHISPER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ audioBase64: b64, language: languageShort })
+  });
+  const data2 = await r2.json().catch(() => ({}));
+  if (!r2.ok) throw new Error(data2?.error || `HTTP ${r2.status}`);
+  return String(data2.text || data2.transcript || data2.result || "").trim();
+}
+
+async function listenSmart({ lang = ASR_LANG, maxMs = 4500, whisper = true } = {}) {
+  // Startet Recording + SR parallel. Wenn SR leer -> Whisper transkribiert dieselbe Aufnahme.
+  const languageShort = (lang || "fr").slice(0, 2).toLowerCase();
+
+  // Wenn MediaRecorder fehlt, versuchen wir wenigstens SR
+  if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
+    if (!speechRecAvailable()) return { text: "", source: "none", error: "no_asr" };
+    return await listenSRonly(lang, maxMs);
+  }
+
+  let stream = null;
+  let recorder = null;
+  let chunks = [];
+  let srText = "";
+  let srError = "";
+
+  const mimeType = pickSupportedMime();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
   let sr = null;
 
-  let finalText = "";
-  let interimText = "";
-  let hadFinal = false;
-  let lastError = "";
+  let resolveDone;
+  const done = new Promise(r => (resolveDone = r));
 
-  const normOut = () => (finalText || interimText || "").trim();
+  const stopTracks = (s) => {
+    try { s?.getTracks?.().forEach(t => t.stop()); } catch {}
+  };
 
-  return await new Promise((resolve) => {
-    const finish = () => {
-      const out = normOut();
-      resolve({ text: out, error: lastError });
-      try { sr && (sr.onresult = sr.onend = sr.onerror = null); } catch {}
-      sr = null;
-    };
+  const finish = async () => {
+    try {
+      if (sr) { try { sr.onresult = sr.onerror = sr.onend = null; } catch {} }
+      if (sr) { try { sr.stop(); } catch {} }
+    } catch {}
 
     try {
+      if (recorder && recorder.state !== "inactive") recorder.stop();
+    } catch {}
+
+    // recorder.onstop löst resolveDone aus (mit Blob)
+  };
+
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
+    });
+
+    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
+    chunks = [];
+
+    recorder.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunks.push(e.data);
+    };
+
+    recorder.onstop = async () => {
+      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      stopTracks(stream);
+
+      // 1) Wenn SR Text hat -> fertig
+      const cleaned = (srText || "").trim();
+      if (cleaned) return resolveDone({ text: cleaned, source: "sr+rec", error: srError });
+
+      // 2) SR leer, Whisper fallback
+      if (whisper) {
+        try {
+          const w = await transcribeWhisper(blob, languageShort);
+          return resolveDone({ text: (w || "").trim(), source: "whisper", error: srError });
+        } catch (e) {
+          return resolveDone({ text: "", source: "whisper_failed", error: String(e?.message || e) });
+        }
+      }
+
+      return resolveDone({ text: "", source: "empty", error: srError || "empty" });
+    };
+
+    // Start Recording
+    recorder.start(200);
+
+    // Start SpeechRecognition (falls verfügbar)
+    if (speechRecAvailable()) {
+      srText = "";
+      srError = "";
       sr = new SR();
       sr.lang = lang;
       sr.interimResults = true;
-      sr.continuous = false;      // stabil für einzelne Wörter
+      sr.continuous = false;
       sr.maxAlternatives = 1;
 
       sr.onresult = (e) => {
@@ -171,39 +294,68 @@ async function listenOnce(lang = ASR_LANG, maxMs = 5000) {
         for (let i = e.resultIndex; i < e.results.length; i++) {
           const r = e.results[i];
           const t = (r && r[0] && r[0].transcript) ? r[0].transcript : "";
-          if (r.isFinal) {
-            hadFinal = true;
-            addFinal += " " + t;
-          } else {
-            interimAll += " " + t;
-          }
+          if (r.isFinal) addFinal += " " + t;
+          else interimAll += " " + t;
         }
-        if (interimAll.trim()) interimText = interimAll.trim();
-        if (addFinal.trim()) finalText = (finalText + " " + addFinal).trim();
+        if (interimAll.trim()) srText = interimAll.trim();
+        if (addFinal.trim()) srText = (srText + " " + addFinal).trim();
 
-        // Sobald wir ein Final haben: schnell beenden
-        if (hadFinal) {
-          setTimeout(() => { try { sr.stop(); } catch {} }, 120);
-        }
+        // Sobald ein Final da ist -> beenden
+        if (addFinal.trim()) finish();
       };
 
-      sr.onerror = (e) => {
-        lastError = e?.error || "asr_error";
-        // bei Fehler trotzdem sauber enden lassen
+      sr.onerror = (e) => { srError = e?.error || "asr_error"; };
+      sr.onend = () => { /* wir beenden über timer oder final */ };
+
+      try { sr.start(); } catch (e) { srError = "start_failed"; }
+    }
+
+    // Hard timeout
+    setTimeout(() => { finish(); }, maxMs);
+
+    return await done;
+  } catch (e) {
+    stopTracks(stream);
+    return { text: "", source: "getUserMedia_failed", error: String(e?.message || e) };
+  }
+}
+
+async function listenSRonly(lang, maxMs) {
+  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+  let sr = null;
+  let text = "";
+  let err = "";
+
+  return await new Promise((resolve) => {
+    const end = () => resolve({ text: (text || "").trim(), source: "sr_only", error: err });
+
+    try {
+      sr = new SR();
+      sr.lang = lang;
+      sr.interimResults = true;
+      sr.continuous = false;
+      sr.maxAlternatives = 1;
+
+      sr.onresult = (e) => {
+        let interimAll = "";
+        let addFinal = "";
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const r = e.results[i];
+          const t = (r && r[0] && r[0].transcript) ? r[0].transcript : "";
+          if (r.isFinal) addFinal += " " + t;
+          else interimAll += " " + t;
+        }
+        text = (addFinal || interimAll || "").trim();
+        if (addFinal.trim()) { try { sr.stop(); } catch {} }
       };
 
-      sr.onend = () => finish();
-
-      // Hard timeout -> stoppt SR, onend liefert dann Text (interim/final)
-      const to = setTimeout(() => {
-        try { sr && sr.stop(); } catch {}
-        clearTimeout(to);
-      }, maxMs);
+      sr.onerror = (e) => { err = e?.error || "asr_error"; };
+      sr.onend = () => end();
 
       sr.start();
+      setTimeout(() => { try { sr.stop(); } catch {} }, maxMs);
     } catch (e) {
-      console.warn("[ASR] start failed:", e);
-      resolve({ text: "", error: "start_failed" });
+      resolve({ text: "", source: "sr_only_failed", error: "start_failed" });
     }
   });
 }
@@ -437,13 +589,7 @@ function renderLearn() {
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
 
-    if (!speechRecAvailable()) {
-      setFeedback("learn-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
-      return;
-    }
-
     setFeedback("learn-feedback", "Sprich jetzt…", null);
-
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -452,29 +598,25 @@ function renderLearn() {
     micRecording = true;
     refreshLocks();
 
-    const { text: heardRaw, error } = await listenOnce(ASR_LANG, 5200);
+    const r = await listenSmart({ lang: ASR_LANG, maxMs: 4200, whisper: true });
 
     micRecording = false;
     refreshLocks();
 
-    // Permission-Fehler klar benennen
-    if (error === "not-allowed" || error === "service-not-allowed") {
-      setFeedback("learn-feedback", "Mikrofon blockiert. Chrome: Schloss-Symbol in der Adresszeile → Mikrofon: Zulassen.", "bad");
-      return;
-    }
-
+    const heardRaw = (r.text || "").trim();
     if (!heardRaw) {
-      setFeedback("learn-feedback", "Ich habe nichts verstanden (leer). Nicht gezählt – bitte nochmal.", "bad");
+      setFeedback("learn-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Bitte nochmal.`, "bad");
       return;
     }
 
     const res = scoreSpeech(it.word, heardRaw);
     const used = res.usedHeard || heardRaw;
+    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
 
     if (res.pass) {
       stats[it.id].learned = true;
-      setFeedback("learn-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ → gewertet: „${used}“ · Weiter!`, "ok");
-      await sleep(700);
+      setFeedback("learn-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) Erkannt: „${heardRaw}“ → gewertet: „${used}“ · Weiter!`, "ok");
+      await sleep(650);
       advanceLearn();
       return;
     }
@@ -483,13 +625,13 @@ function renderLearn() {
 
     if (stats[it.id].failsLearn >= FAILS_TO_CONTAINER) {
       putIntoContainer(it.id);
-      setFeedback("learn-feedback", `Aussprache: ${res.overall}% · „${heardRaw}“ → „${used}“ · In den Container.`, "bad");
+      setFeedback("learn-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ → „${used}“ · In den Container.`, "bad");
       await sleep(800);
       advanceLearn();
       return;
     }
 
-    setFeedback("learn-feedback", `Aussprache: ${res.overall}% · „${heardRaw}“ → „${used}“ · Nochmal (${stats[it.id].failsLearn}/${FAILS_TO_CONTAINER})`, "bad");
+    setFeedback("learn-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ → „${used}“ · Nochmal (${stats[it.id].failsLearn}/${FAILS_TO_CONTAINER})`, "bad");
   };
 }
 
@@ -743,7 +885,6 @@ function renderTestC() {
     if (micRecording || ttsActive) return;
 
     setFeedback("testC-feedback", "Sprich jetzt…", null);
-
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -752,28 +893,25 @@ function renderTestC() {
     micRecording = true;
     refreshLocks();
 
-    const { text: heardRaw, error } = await listenOnce(ASR_LANG, 5600);
+    const r = await listenSmart({ lang: ASR_LANG, maxMs: 5200, whisper: true });
 
     micRecording = false;
     refreshLocks();
 
-    if (error === "not-allowed" || error === "service-not-allowed") {
-      setFeedback("testC-feedback", "Mikrofon blockiert. Chrome: Schloss → Mikrofon: Zulassen.", "bad");
-      return;
-    }
-
+    const heardRaw = (r.text || "").trim();
     if (!heardRaw) {
-      setFeedback("testC-feedback", "Ich habe nichts verstanden (leer). Nicht gezählt – bitte nochmal.", "bad");
+      setFeedback("testC-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Bitte nochmal.`, "bad");
       return;
     }
 
     const res = scoreSpeech(target.word, heardRaw);
     const used = res.usedHeard || heardRaw;
+    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
 
     if (res.pass) {
       testCounts[target.id] = (testCounts[target.id] || 0) + 1;
       testC_failStreakById[target.id] = 0;
-      setFeedback("testC-feedback", `Aussprache: ${res.overall}% · „${heardRaw}“ → „${used}“ · Gezählt! (${testCounts[target.id]}/${TEST_NEED_EACH})`, "ok");
+      setFeedback("testC-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ → „${used}“ · Gezählt! (${testCounts[target.id]}/${TEST_NEED_EACH})`, "ok");
       testTargetId = null;
       await sleep(650);
       renderTestC();
@@ -784,12 +922,12 @@ function renderTestC() {
     const n = testC_failStreakById[target.id];
 
     if (n >= TESTC_MAX_FAILS_BEFORE_HINT) {
-      setFeedback("testC-feedback", `Aussprache: ${res.overall}% · „${heardRaw}“ → „${used}“ · Hilfe: Hör nochmal zu.`, "bad");
+      setFeedback("testC-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ → „${used}“ · Hilfe: Hör nochmal zu.`, "bad");
       speakWord(target.word, 1.0);
       return;
     }
 
-    setFeedback("testC-feedback", `Aussprache: ${res.overall}% · „${heardRaw}“ → „${used}“ · Nochmal (${n}/${TESTC_MAX_FAILS_BEFORE_HINT})`, "bad");
+    setFeedback("testC-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ → „${used}“ · Nochmal (${n}/${TESTC_MAX_FAILS_BEFORE_HINT})`, "bad");
   };
 }
 
@@ -797,7 +935,6 @@ function renderTestC() {
 function renderReview() {
   const pack = getPackItems();
   const reviewIds = container.filter(id => pack.some(it => it.id === id));
-
   if (!reviewIds.length) return nextPackOrSentences();
 
   const idx = Math.min(currentItemIdxInPack, reviewIds.length - 1);
@@ -846,7 +983,6 @@ function renderReview() {
     if (micRecording || ttsActive) return;
 
     setFeedback("rev-feedback", "Sprich jetzt…", null);
-
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -855,19 +991,22 @@ function renderReview() {
     micRecording = true;
     refreshLocks();
 
-    const { text: heardRaw } = await listenOnce(ASR_LANG, 5200);
+    const r = await listenSmart({ lang: ASR_LANG, maxMs: 4200, whisper: true });
 
     micRecording = false;
     refreshLocks();
 
+    const heardRaw = (r.text || "").trim();
     if (!heardRaw) {
-      setFeedback("rev-feedback", "Ich habe nichts verstanden (leer). Nicht gezählt.", "bad");
+      setFeedback("rev-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Nicht gezählt.`, "bad");
       return;
     }
 
     const res = scoreSpeech(it.word, heardRaw);
-    if (res.pass) setFeedback("rev-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ · Gut!`, "ok");
-    else setFeedback("rev-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ · Nochmal.`, "bad");
+    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
+
+    if (res.pass) setFeedback("rev-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ · Gut!`, "ok");
+    else setFeedback("rev-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ · Nochmal.`, "bad");
   };
 }
 
@@ -922,7 +1061,6 @@ function renderSentences() {
     if (micRecording || ttsActive) return;
 
     setFeedback("sent-feedback", "Sprich jetzt…", null);
-
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -931,24 +1069,27 @@ function renderSentences() {
     micRecording = true;
     refreshLocks();
 
-    const { text: heardRaw } = await listenOnce(ASR_LANG, 6500);
+    const r = await listenSmart({ lang: ASR_LANG, maxMs: 7000, whisper: true });
 
     micRecording = false;
     refreshLocks();
 
+    const heardRaw = (r.text || "").trim();
     if (!heardRaw) {
-      setFeedback("sent-feedback", "Ich habe nichts verstanden (leer). Nicht gezählt.", "bad");
+      setFeedback("sent-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Nicht gezählt.`, "bad");
       return;
     }
 
     const res = scoreSpeech(s.text, heardRaw);
+    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
+
     if (res.pass) {
-      setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ · Weiter!`, "ok");
+      setFeedback("sent-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ · Weiter!`, "ok");
       window.__sent_idx++;
       await sleep(800);
       renderSentences();
     } else {
-      setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ · Nochmal.`, "bad");
+      setFeedback("sent-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heardRaw}“ · Nochmal.`, "bad");
     }
   };
 }
@@ -967,5 +1108,7 @@ function renderEnd() {
     start();
   };
 }
+
+
 
 
