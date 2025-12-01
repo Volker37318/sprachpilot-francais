@@ -1,6 +1,6 @@
-// src/app.js – Vor-A1 / Klassensprache Französisch (STABIL: feste 12 Bilder, Reihenfolge später leicht änderbar)
+// src/app.js – Vor-A1 Deutsch (STABIL: feste 12 Bilder, 4er-Packs + 3 Tests + Sätze)
 //
-// System pro 4er-Pack:
+// Flow pro 4er-Pack:
 // 1) Lernen + Aussprache (Hören/Langsam/Sprechen/Später)
 //    - ab 80% -> nächstes Wort
 //    - nach 4x falsch -> Wort in Review-Container, dann weiter
@@ -13,18 +13,20 @@
 //    - unkorrekt zählt nicht
 //    - nach 3 Fehlversuchen: System sagt Wort (Lernhilfe), Wort bleibt im Review-Container
 //
-// Danach: nächstes 4er-Pack. Am Ende: Review-Container in 4er-Packs wiederholen. Dann Ende.
+// Danach: nächstes 4er-Pack. Am Ende: Review-Container wiederholen.
+// NEU danach: Satzphase (20 Sätze) mit Hören/Langsam/Sprechen/Später + Satz-Review.
 
-const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
-const TITLE = "Vor-A1 Training";
+const TITLE = "Vor-A1 Deutsch";
+const ASR_LANG = "de-DE";
+const TTS_LANG_PREFIX = "de";
 
 const PACK_SIZE = 4;
 
-const PASS_THRESHOLD = 80;         // ab 80% weiter
-const FAILS_TO_REVIEW = 4;         // nach 4x falsch im Learn -> Review-Container
-const TESTC_FAILS_BEFORE_TELL = 3; // nach 3 Fehlversuchen im Test C sagt System das Wort
-const AUTO_ADVANCE_MS = 650;       // kurze Anzeige bei Erfolg
+const PASS_THRESHOLD = 80;          // ab 80% weiter
+const FAILS_TO_REVIEW = 4;          // nach 4x falsch im Learn -> Review-Container
+const TESTC_FAILS_BEFORE_TELL = 3;  // nach 3 Fehlversuchen im Test C sagt System das Wort
+const AUTO_ADVANCE_MS = 650;
 
 const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // => /assets/images/W1D1/
 
@@ -35,55 +37,85 @@ const status = (msg) => {
   console.log("[STATUS]", msg);
 };
 
-// ----------------- FESTE 12 ITEMS (HIER SPÄTER REIHENFOLGE/WÖRTER ÄNDERN) -----------------
-// Wichtig: img muss auf deine vorhandenen 12 Bilddateien zeigen (wie bisher).
+// ----------------- FESTE 12 ITEMS (Reihenfolge später hier ändern) -----------------
 const FIXED_ITEMS = [
-  { id: "ecouter",  word: "Écouter",  translation: "", img: IMAGE_DIR + "bild1-1.png", fallbackImg: "" },
-  { id: "repeter",  word: "Répéter",  translation: "", img: IMAGE_DIR + "bild1-2.png", fallbackImg: "" },
-  { id: "lire",     word: "Lire",     translation: "", img: IMAGE_DIR + "bild1-3.png", fallbackImg: "" },
-  { id: "ecrire",   word: "Écrire",   translation: "", img: IMAGE_DIR + "bild1-4.png", fallbackImg: "" },
+  { id: "w01_ich",       word: "ich",       translation: "", img: IMAGE_DIR + "w01_ich.png",       fallbackImg: "" },
+  { id: "w02_sie",       word: "Sie",       translation: "", img: IMAGE_DIR + "w02_sie.png",       fallbackImg: "" },
+  { id: "w03_buch",      word: "Buch",      translation: "", img: IMAGE_DIR + "w03_buch.png",      fallbackImg: "" },
+  { id: "w04_heft",      word: "Heft",      translation: "", img: IMAGE_DIR + "w04_heft.png",      fallbackImg: "" },
+  { id: "w05_stift",     word: "Stift",     translation: "", img: IMAGE_DIR + "w05_stift.png",     fallbackImg: "" },
+  { id: "w06_tisch",     word: "Tisch",     translation: "", img: IMAGE_DIR + "w06_tisch.png",     fallbackImg: "" },
+  { id: "w07_stuhl",     word: "Stuhl",     translation: "", img: IMAGE_DIR + "w07_stuhl.png",     fallbackImg: "" },
+  { id: "w08_tuer",      word: "Tür",       translation: "", img: IMAGE_DIR + "w08_tuer.png",      fallbackImg: "" },
+  { id: "w09_hoeren",    word: "hören",     translation: "", img: IMAGE_DIR + "w09_hoeren.png",    fallbackImg: "" },
+  { id: "w10_sprechen",  word: "sprechen",  translation: "", img: IMAGE_DIR + "w10_sprechen.png",  fallbackImg: "" },
+  { id: "w11_oeffnen",   word: "öffnen",    translation: "", img: IMAGE_DIR + "w11_oeffnen.png",   fallbackImg: "" },
+  { id: "w12_schreiben", word: "schreiben", translation: "", img: IMAGE_DIR + "w12_schreiben.png", fallbackImg: "" }
+];
 
-  { id: "voir",     word: "Voir",     translation: "", img: IMAGE_DIR + "bild2-1.png", fallbackImg: "" },
-  { id: "ouvrir",   word: "Ouvrir",   translation: "", img: IMAGE_DIR + "bild2-2.png", fallbackImg: "" },
-  { id: "fermer",   word: "Fermer",   translation: "", img: IMAGE_DIR + "bild2-3.png", fallbackImg: "" },
-  { id: "trouver",  word: "Trouver",  translation: "", img: IMAGE_DIR + "bild2-4.png", fallbackImg: "" },
-
-  { id: "livre",    word: "Livre",    translation: "", img: IMAGE_DIR + "bild3-1.png", fallbackImg: "" },
-  { id: "page",     word: "Page",     translation: "", img: IMAGE_DIR + "bild3-2.png", fallbackImg: "" },
-  { id: "numero",   word: "Numéro",   translation: "", img: IMAGE_DIR + "bild3-3.png", fallbackImg: "" },
-  { id: "tache",    word: "Tâche",    translation: "", img: IMAGE_DIR + "bild4-4.png", fallbackImg: "" }
+// ----------------- Satzliste (Phase nach den 3 Tests) -----------------
+const SENTENCES = [
+  { id: "s01", text: "Ich höre." },
+  { id: "s02", text: "Ich spreche." },
+  { id: "s03", text: "Ich schreibe." },
+  { id: "s04", text: "Ich öffne die Tür." },
+  { id: "s05", text: "Ich öffne das Buch." },
+  { id: "s06", text: "Ich öffne das Heft." },
+  { id: "s07", text: "Ich schreibe im Heft." },
+  { id: "s08", text: "Ich schreibe ins Heft." },
+  { id: "s09", text: "Ich schreibe mit dem Stift." },
+  { id: "s10", text: "Das Buch ist da." },
+  { id: "s11", text: "Das Heft ist da." },
+  { id: "s12", text: "Der Stift ist da." },
+  { id: "s13", text: "Der Tisch ist da." },
+  { id: "s14", text: "Der Stuhl ist da." },
+  { id: "s15", text: "Die Tür ist da." },
+  { id: "s16", text: "Sie hören." },
+  { id: "s17", text: "Sie sprechen." },
+  { id: "s18", text: "Sie schreiben." },
+  { id: "s19", text: "Öffnen Sie die Tür." },
+  { id: "s20", text: "Öffnen Sie das Buch." }
 ];
 
 // ----------------- GLOBAL STATE -----------------
-let orderedItems = [...FIXED_ITEMS]; // 12 items in fester Reihenfolge
-let mainIndex = 0;                   // nächster Index im Haupt-Flow
-let mode = "learn";                  // "learn" | "testA" | "testB" | "testC" | "review" | "end"
-let currentPack = [];                // aktuelle 4 Items
-let learnIndex = 0;                  // aktuelles Wort im Learn (0..3)
+let orderedItems = [...FIXED_ITEMS];
+let mainIndex = 0;
 
-let learnFailCount = 0;              // Fehlschläge fürs aktuelle Wort (Learn)
+// modes: "learn" | "testA" | "testB" | "testC" | "review" | "sentences" | "end"
+let mode = "learn";
+
+let currentPack = [];
+let learnIndex = 0;
+let learnFailCount = 0;
+
+// Review-Container Wörter
+let reviewSet = new Set();
+let reviewCursor = 0;
+
+// Tests – mastery
+let testA_correct = new Map();
+let testB_correct = new Map();
+let testC_correct = new Map();
+
+let testTargetId = null;
+let testC_failStreak = 0;
+
+// Satzphase state
+let sentenceMode = "main"; // "main" | "review"
+let sentenceIndex = 0;
+let sentenceFailCount = 0;
+let sentenceReviewSet = new Set();
+let sentenceReviewQueue = [];
+
+// timers / audio
 let autoStopTimer = null;
 let advanceTimer = null;
 
-// Review-Container (Einträge werden später nochmal geübt)
-let reviewSet = new Set();           // Set von item.id (in Einfüge-Reihenfolge)
-let reviewCursor = 0;                // rotiert durch Review-IDs
-
-// Tests – Mastery Counters (pro Pack)
-let testA_correct = new Map();       // item.id -> 0..2
-let testB_correct = new Map();       // item.id -> 0..2
-let testC_correct = new Map();       // item.id -> 0..2
-
-let testTargetId = null;             // welches Item ist gerade dran
-let testC_failStreak = 0;            // Fehlversuche am aktuellen Test-C Target
-
-// TTS
 let ttsSupported = "speechSynthesis" in window;
 let ttsVoices = [];
 let ttsVoice = null;
 let ttsActive = false;
 
-// ASR state
 let micRecording = false;
 let _sr = null;
 let _srFinal = "";
@@ -101,15 +133,12 @@ function clearAdvanceTimer() {
   try { if (advanceTimer) clearTimeout(advanceTimer); } catch {}
   advanceTimer = null;
 }
-
 function clearAutoStopTimer() {
   try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
   autoStopTimer = null;
 }
 
-// ----------------- WORD → KEY HELPERS (für Scoring) -----------------
-const ARTICLES = new Set(["le", "la", "les", "un", "une", "des", "du", "de", "d", "l"]);
-
+// ----------------- Helpers -----------------
 function escapeHtml(str) {
   return String(str || "")
     .replaceAll("&", "&amp;")
@@ -143,7 +172,6 @@ function pickNextTargetId(masterMap) {
   const need = currentPack
     .filter(it => (masterMap.get(it.id) || 0) < 2)
     .map(it => it.id);
-
   if (!need.length) return null;
   return need[Math.floor(Math.random() * need.length)];
 }
@@ -178,7 +206,7 @@ function setFeedback(elId, text, kind) {
   }
 }
 
-// ----------------- AUDIO LOCKS -----------------
+// ----------------- Locks -----------------
 function setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater }) {
   const localRefresh = () => {
     const rec = micRecording;
@@ -186,7 +214,6 @@ function setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater }) {
 
     if (btnHear) btnHear.disabled = rec || tts;
     if (btnHearSlow) btnHearSlow.disabled = rec || tts;
-
     if (btnSpeak) btnSpeak.disabled = rec || tts;
     if (btnLater) btnLater.disabled = rec || tts;
   };
@@ -194,12 +221,12 @@ function setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater }) {
   localRefresh();
 }
 
-// ----------------- LOCAL ASR (Browser SpeechRecognition) -----------------
+// ----------------- ASR -----------------
 function speechRecAvailable() {
   return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
 
-function startBrowserASR(lang = "fr-FR") {
+function startBrowserASR(lang = ASR_LANG) {
   if (!speechRecAvailable()) return false;
 
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -260,10 +287,31 @@ function stopBrowserASR() {
   });
 }
 
-// ----------------- SCORING (wie bisher, aber PASS = >=80) -----------------
+// ----------------- Scoring -----------------
+const ARTICLES = new Set([
+  "der","die","das","den","dem","des",
+  "ein","eine","einen","einem","einer","eines",
+  "le","la","les","un","une","des","du","de","d","l"
+]);
+
+const VERB_LEMMA = {
+  // hören
+  "hore":"hoeren", "hoere":"hoeren", "hoeren":"hoeren",
+  // sprechen
+  "spreche":"sprechen", "sprechen":"sprechen",
+  // schreiben
+  "schreibe":"schreiben", "schreiben":"schreiben",
+  // öffnen
+  "oeffne":"oeffnen", "oeffnen":"oeffnen"
+};
+
 function _norm(s) {
   return String(s || "")
     .toLowerCase()
+    .replaceAll("ß", "ss")
+    .replaceAll("ä", "ae")
+    .replaceAll("ö", "oe")
+    .replaceAll("ü", "ue")
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .replace(/[’']/g, " ")
@@ -272,30 +320,26 @@ function _norm(s) {
     .trim();
 }
 
-function _tokensNoArticles(s) {
-  return _norm(s)
-    .split(" ")
-    .filter(Boolean)
-    .filter(t => !ARTICLES.has(t));
-}
+function canonicalForScoring(s) {
+  let x = _norm(s);
+  if (!x) return "";
 
-const FR_VERB_LEMMA = {
-  ecoute: "ecouter", ecouter: "ecouter",
-  repete: "repeter", repeter: "repeter",
-  lis: "lire", lire: "lire",
-  ecris: "ecrire", ecrire: "ecrire",
-  vois: "voir", voir: "voir",
-  ouvre: "ouvrir", ouvrir: "ouvrir", ouvert: "ouvrir",
-  ferme: "fermer", fermer: "fermer",
-  trouve: "trouver", trouver: "trouver"
-};
+  // Kontraktionen vereinheitlichen (wenn ASR sie ausschreibt)
+  x = (` ${x} `)
+    .replace(/ in dem /g, " im ")
+    .replace(/ in das /g, " ins ")
+    .replace(/ zu dem /g, " zum ")
+    .replace(/ zu der /g, " zur ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-function canonicalFrenchForScoring(s) {
-  const toks = _tokensNoArticles(s);
+  const toks = x.split(" ").filter(Boolean).filter(t => !ARTICLES.has(t));
   if (!toks.length) return "";
-  const out = [...toks];
-  out[0] = FR_VERB_LEMMA[out[0]] || out[0];
-  return out.join(" ").trim();
+
+  // lemmatisiere grob nur das erste Verb-Token
+  toks[0] = VERB_LEMMA[toks[0]] || toks[0];
+
+  return toks.join(" ").trim();
 }
 
 function _levenshtein(a, b) {
@@ -343,8 +387,8 @@ function _tokenSimilarity(target, heard) {
 }
 
 function scoreSpeech(target, heard) {
-  const tCan = canonicalFrenchForScoring(target);
-  const hCan = canonicalFrenchForScoring(heard);
+  const tCan = canonicalForScoring(target);
+  const hCan = canonicalForScoring(heard);
 
   if (tCan && hCan && tCan === hCan) {
     return { overall: 100, grade: "excellent", pass: true };
@@ -362,7 +406,7 @@ function scoreSpeech(target, heard) {
   };
 }
 
-// ----------------- INIT (ohne JSON, nur feste Items) -----------------
+// ----------------- INIT -----------------
 initTTS();
 startProgram();
 
@@ -371,8 +415,10 @@ function startProgram() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
+  orderedItems = [...FIXED_ITEMS];
   mainIndex = 0;
   mode = "learn";
+
   reviewSet = new Set();
   reviewCursor = 0;
 
@@ -396,8 +442,7 @@ function startReviewMode() {
   const ids = Array.from(reviewSet);
 
   if (!ids.length) {
-    mode = "end";
-    return;
+    return startSentenceMode();
   }
 
   if (reviewCursor >= ids.length) reviewCursor = 0;
@@ -414,7 +459,7 @@ function startReviewMode() {
   resetPackTests();
 
   if (!currentPack.length) {
-    mode = "end";
+    return startSentenceMode();
   }
 }
 
@@ -451,6 +496,16 @@ function resetPackTests() {
   }
 }
 
+function startSentenceMode() {
+  mode = "sentences";
+  sentenceMode = "main";
+  sentenceIndex = 0;
+  sentenceFailCount = 0;
+  sentenceReviewSet = new Set();
+  sentenceReviewQueue = [];
+  render();
+}
+
 function render() {
   if (!appEl) return;
 
@@ -459,9 +514,10 @@ function render() {
   if (mode === "testA") return renderTestA();
   if (mode === "testB") return renderTestB();
   if (mode === "testC") return renderTestC();
+  if (mode === "sentences") return renderSentence();
 }
 
-// ----------------- LEARN (Wort für Wort) -----------------
+// ----------------- LEARN -----------------
 function renderLearnWord() {
   clearAdvanceTimer();
   stopAllAudioStates();
@@ -481,7 +537,7 @@ function renderLearnWord() {
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
-        <div class="badge">${escapeHtml(TITLE)} – ${escapeHtml(TARGET_LANG.toUpperCase())}</div>
+        <div class="badge">${escapeHtml(TITLE)}</div>
         <div class="badge">${escapeHtml(packNo)}</div>
         <div class="badge">Wort ${learnIndex + 1} von ${currentPack.length}${isReview ? " (Review)" : ""}</div>
         <div class="badge">Gesamt ${globalPos} von ${total}</div>
@@ -528,13 +584,12 @@ function renderLearnWord() {
     if (micRecording || ttsActive) return;
     reviewSet.add(it.id);
     setFeedback("learn-feedback", "Okay – dieses Wort kommt später nochmal (Review).", "ok");
-    await sleep(500);
+    await sleep(450);
     goNextLearnWord();
   };
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
-
     stopAllAudioStates();
 
     if (!speechRecAvailable()) {
@@ -549,7 +604,7 @@ function renderLearnWord() {
     refreshLocks();
     await sleep(120);
 
-    const started = startBrowserASR("fr-FR");
+    const started = startBrowserASR(ASR_LANG);
     if (!started) {
       setFeedback("learn-feedback", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
       return;
@@ -570,22 +625,14 @@ function renderLearnWord() {
         refreshLocks();
 
         if (res.pass) {
-          setFeedback(
-            "learn-feedback",
-            `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Weiter!`,
-            "ok"
-          );
+          setFeedback("learn-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Weiter!`, "ok");
           clearAdvanceTimer();
           advanceTimer = setTimeout(() => goNextLearnWord(), AUTO_ADVANCE_MS);
           return;
         }
 
         learnFailCount++;
-        setFeedback(
-          "learn-feedback",
-          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Nochmal.`,
-          "bad"
-        );
+        setFeedback("learn-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Nochmal.`, "bad");
 
         if (learnFailCount >= FAILS_TO_REVIEW) {
           reviewSet.add(it.id);
@@ -613,7 +660,7 @@ function goNextLearnWord(resetFail = false) {
   renderLearnWord();
 }
 
-// ----------------- TEST A (WORT SICHTBAR) -----------------
+// ----------------- TEST A (Wort sichtbar) -----------------
 function renderTestA() {
   clearAdvanceTimer();
   stopAllAudioStates();
@@ -639,7 +686,6 @@ function renderTestA() {
       <h1>Welches Bild passt?</h1>
       <div class="card card-word" style="text-align:center;">
         <div class="word-text" style="font-size:30px; line-height:1.1;">${escapeHtml(target.word)}</div>
-        <div class="word-translation" style="margin-top:8px;">${escapeHtml(target.translation || "")}</div>
       </div>
 
       <div class="icon-grid">
@@ -680,7 +726,7 @@ function renderTestA() {
         testA_correct.set(target.id, Math.min(2, c));
         setFeedback("testA-feedback", "Richtig!", "ok");
 
-        await sleep(550);
+        await sleep(450);
 
         if (allMastered(testA_correct)) {
           mode = "testB";
@@ -697,7 +743,7 @@ function renderTestA() {
   });
 }
 
-// ----------------- TEST B (NUR HÖREN) -----------------
+// ----------------- TEST B (nur hören) -----------------
 function renderTestB() {
   clearAdvanceTimer();
   stopAllAudioStates();
@@ -762,7 +808,7 @@ function renderTestB() {
         testB_correct.set(target.id, Math.min(2, c));
         setFeedback("testB-feedback", "Richtig!", "ok");
 
-        await sleep(550);
+        await sleep(450);
 
         if (allMastered(testB_correct)) {
           mode = "testC";
@@ -780,13 +826,12 @@ function renderTestB() {
   });
 }
 
-// ----------------- TEST C (BILD → SPRECHEN) -----------------
+// ----------------- TEST C (Bild -> sprechen) -----------------
 function renderTestC() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
   if (testTargetId == null) testTargetId = pickNextTargetId(testC_correct);
-
   if (testTargetId == null) {
     completeCurrentPack();
     return;
@@ -838,7 +883,6 @@ function renderTestC() {
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
-
     stopAllAudioStates();
 
     if (!speechRecAvailable()) {
@@ -853,7 +897,7 @@ function renderTestC() {
     refreshLocks();
     await sleep(120);
 
-    const started = startBrowserASR("fr-FR");
+    const started = startBrowserASR(ASR_LANG);
     if (!started) {
       setFeedback("testC-feedback", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
       return;
@@ -878,11 +922,7 @@ function renderTestC() {
           testC_correct.set(target.id, Math.min(2, c));
           testC_failStreak = 0;
 
-          setFeedback(
-            "testC-feedback",
-            `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Gezählt!`,
-            "ok"
-          );
+          setFeedback("testC-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Gezählt!`, "ok");
 
           clearAdvanceTimer();
           advanceTimer = setTimeout(() => {
@@ -894,18 +934,14 @@ function renderTestC() {
         }
 
         testC_failStreak++;
-        setFeedback(
-          "testC-feedback",
-          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Nicht gezählt.`,
-          "bad"
-        );
+        setFeedback("testC-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Nicht gezählt.`, "bad");
 
         if (testC_failStreak >= TESTC_FAILS_BEFORE_TELL) {
           reviewSet.add(target.id);
           testC_failStreak = 0;
 
           setFeedback("testC-feedback", "Lernhilfe: Hör nochmal zu. (Dieses Wort kommt später nochmal.)", "bad");
-          await sleep(350);
+          await sleep(300);
           speakWord(target.word, 0.7);
 
           clearAdvanceTimer();
@@ -924,18 +960,193 @@ function renderTestC() {
   };
 }
 
+// ----------------- SENTENCE PHASE -----------------
+function currentSentenceObj() {
+  if (sentenceMode === "main") return SENTENCES[sentenceIndex] || null;
+  return sentenceReviewQueue[sentenceIndex] || null;
+}
+
+function renderSentence() {
+  clearAdvanceTimer();
+  stopAllAudioStates();
+
+  // Queue bauen / wechseln
+  if (sentenceMode === "main") {
+    if (sentenceIndex >= SENTENCES.length) {
+      if (sentenceReviewSet.size > 0) {
+        sentenceMode = "review";
+        sentenceReviewQueue = Array.from(sentenceReviewSet).map(id => SENTENCES.find(s => s.id === id)).filter(Boolean);
+        sentenceIndex = 0;
+        sentenceFailCount = 0;
+      } else {
+        mode = "end";
+        return render();
+      }
+    }
+  } else {
+    // review
+    if (sentenceIndex >= sentenceReviewQueue.length) {
+      if (sentenceReviewSet.size > 0) {
+        sentenceReviewQueue = Array.from(sentenceReviewSet).map(id => SENTENCES.find(s => s.id === id)).filter(Boolean);
+        sentenceIndex = 0;
+        sentenceFailCount = 0;
+      } else {
+        mode = "end";
+        return render();
+      }
+    }
+  }
+
+  const sObj = currentSentenceObj();
+  if (!sObj) {
+    mode = "end";
+    return render();
+  }
+
+  const totalMain = SENTENCES.length;
+  const progressLabel = sentenceMode === "main"
+    ? `Satz ${sentenceIndex + 1} von ${totalMain}`
+    : `Wiederholung ${sentenceIndex + 1} von ${Math.max(1, sentenceReviewQueue.length)}`;
+
+  appEl.innerHTML = `
+    <div class="screen screen-learn">
+      <div class="meta">
+        <div class="badge">Sätze trainieren</div>
+        <div class="badge">${escapeHtml(progressLabel)}</div>
+        <div class="badge">Review offen: ${sentenceReviewSet.size}</div>
+      </div>
+
+      <h1>Satz nachsprechen</h1>
+
+      <div class="card card-word" style="text-align:center;">
+        <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(sObj.text)}</div>
+      </div>
+
+      <div class="controls-audio">
+        <button id="btn-hear" class="btn primary">Hören</button>
+        <button id="btn-hear-slow" class="btn secondary">Langsam</button>
+      </div>
+
+      <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <button id="btn-speak" class="btn mic">Ich spreche</button>
+        <button id="btn-later" class="btn secondary">Später noch einmal</button>
+        <div id="sent-feedback" class="feedback" style="flex-basis:100%;"></div>
+      </div>
+
+      <div style="margin-top:10px; font-size:13px; opacity:.8;">
+        Fehlversuche: <strong>${sentenceFailCount}</strong> / ${FAILS_TO_REVIEW}
+      </div>
+    </div>
+  `;
+
+  const btnHear = document.getElementById("btn-hear");
+  const btnHearSlow = document.getElementById("btn-hear-slow");
+  const btnSpeak = document.getElementById("btn-speak");
+  const btnLater = document.getElementById("btn-later");
+
+  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater });
+
+  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(sObj.text, 1.0); };
+  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(sObj.text, 0.7); };
+
+  btnLater.onclick = async () => {
+    if (micRecording || ttsActive) return;
+    sentenceReviewSet.add(sObj.id);
+    setFeedback("sent-feedback", "Okay – dieser Satz kommt später nochmal.", "ok");
+    await sleep(450);
+    nextSentence();
+  };
+
+  btnSpeak.onclick = async () => {
+    if (micRecording || ttsActive) return;
+    stopAllAudioStates();
+
+    if (!speechRecAvailable()) {
+      setFeedback("sent-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
+
+    setFeedback("sent-feedback", "Sprich jetzt. Aufnahme stoppt automatisch.", null);
+
+    try { window.speechSynthesis.cancel(); } catch {}
+    ttsActive = false;
+    refreshLocks();
+    await sleep(120);
+
+    const started = startBrowserASR(ASR_LANG);
+    if (!started) {
+      setFeedback("sent-feedback", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
+      return;
+    }
+
+    micRecording = true;
+    refreshLocks();
+
+    clearAutoStopTimer();
+    autoStopTimer = setTimeout(async () => {
+      try {
+        setFeedback("sent-feedback", "Verarbeite…", null);
+
+        const recognizedText = await stopBrowserASR();
+        const res = scoreSpeech(sObj.text, recognizedText);
+
+        micRecording = false;
+        refreshLocks();
+
+        if (res.pass) {
+          // Satz ist geschafft -> aus Review entfernen
+          sentenceReviewSet.delete(sObj.id);
+
+          setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Weiter!`, "ok");
+          sentenceFailCount = 0;
+
+          clearAdvanceTimer();
+          advanceTimer = setTimeout(() => nextSentence(), AUTO_ADVANCE_MS);
+          return;
+        }
+
+        // nicht bestanden
+        sentenceFailCount++;
+        setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Nochmal.`, "bad");
+
+        if (sentenceFailCount >= FAILS_TO_REVIEW) {
+          sentenceReviewSet.add(sObj.id);
+          setFeedback("sent-feedback", "Noch nicht sicher. Dieser Satz kommt später nochmal.", "bad");
+          sentenceFailCount = 0;
+          clearAdvanceTimer();
+          advanceTimer = setTimeout(() => nextSentence(), 900);
+        }
+      } catch (e) {
+        console.error(e);
+        micRecording = false;
+        refreshLocks();
+        setFeedback("sent-feedback", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
+      }
+    }, 4500);
+  };
+}
+
+function nextSentence() {
+  stopAllAudioStates();
+  clearAdvanceTimer();
+  sentenceIndex++;
+  renderSentence();
+}
+
 // ----------------- END SCREEN -----------------
 function renderEndScreen() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
-  const reviewLeft = Array.from(reviewSet).length;
+  const reviewLeftWords = Array.from(reviewSet).length;
+  const reviewLeftSents = sentenceReviewSet.size;
 
   appEl.innerHTML = `
     <div class="screen screen-end">
       <h1>Fertig</h1>
-      <p>Du hast die 12 Wörter durchgearbeitet und die Tests abgeschlossen.</p>
-      <p>${reviewLeft ? `Offene Wiederholungen: <strong>${reviewLeft}</strong>` : "Keine offenen Wiederholungen mehr."}</p>
+      <p>Wörter + Tests + Sätze abgeschlossen.</p>
+      <p>Offene Wort-Wiederholungen: <strong>${reviewLeftWords}</strong></p>
+      <p>Offene Satz-Wiederholungen: <strong>${reviewLeftSents}</strong></p>
 
       <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-top:14px;">
         <button id="btn-repeat" class="btn primary">Nochmal starten</button>
@@ -958,14 +1169,10 @@ function initTTS() {
     if (!ttsVoices.length) return;
 
     ttsVoice =
-      ttsVoices.find((v) => v.lang && v.lang.toLowerCase().startsWith("fr")) ||
+      ttsVoices.find((v) => (v.lang || "").toLowerCase().startsWith(TTS_LANG_PREFIX)) ||
       ttsVoices[0];
 
-    status(
-      ttsVoice
-        ? `Sprachausgabe bereit: ${ttsVoice.name} (${ttsVoice.lang})`
-        : "Sprachausgabe bereit."
-    );
+    status(ttsVoice ? `Sprachausgabe bereit: ${ttsVoice.name} (${ttsVoice.lang})` : "Sprachausgabe bereit.");
   };
 
   pickVoice();
@@ -985,7 +1192,7 @@ function speakWord(text, rate = 1.0) {
       utter.voice = ttsVoice;
       utter.lang = ttsVoice.lang;
     } else {
-      utter.lang = "fr-FR";
+      utter.lang = ASR_LANG;
     }
     utter.rate = rate;
 
@@ -1018,7 +1225,3 @@ function stopAllAudioStates() {
 
   refreshLocks();
 }
-
-
-
-
