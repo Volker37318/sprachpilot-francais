@@ -23,21 +23,26 @@ const WHISPER_URL =
 
 // ---------- Inhalte (12 Bilder) ----------
 const ITEMS = [
-  { id: "w01_ich",       word: "je",       de: "ich",        img: "w01_ich.png" },
-  { id: "w02_du",        word: "tu",       de: "du",         img: "w02_du.png" },
-  { id: "w03_wir",       word: "nous",     de: "wir",        img: "w03_wir.png" },
-  { id: "w04_sie",       word: "vous",     de: "Sie / ihr",  img: "w04_sie.png" },
+  // Pack 1 (wie früher): Verben
+  { id: "w01_ecouter",  word: "écouter",  de: "hören",        img: "w01_hoeren.png" },
+  { id: "w02_repeter",  word: "répéter",  de: "wiederholen",  img: "w02_wiederholen.png" },
+  { id: "w03_lire",     word: "lire",     de: "lesen",        img: "w03_lesen.png" },
+  { id: "w04_ecrire",   word: "écrire",   de: "schreiben",    img: "w04_schreiben.png" },
 
-  { id: "w05_buch",      word: "livre",    de: "Buch",       img: "w05_buch.png" },
-  { id: "w06_tuer",      word: "porte",    de: "Tür",        img: "w06_tuer.png" },
-  { id: "w07_oeffnen",   word: "ouvrir",   de: "öffnen",     img: "w07_oeffnen.png" },
-  { id: "w08_schliessen",word: "fermer",   de: "schließen",  img: "w08_schliessen.png" },
+  // Pack 2: Verben
+  { id: "w05_voir",     word: "voir",     de: "sehen",        img: "w05_sehen.png" },
+  { id: "w06_ouvrir",   word: "ouvrir",   de: "öffnen",       img: "w06_oeffnen.png" },
+  { id: "w07_fermer",   word: "fermer",   de: "schließen",    img: "w07_schliessen.png" },
+  { id: "w08_trouver",  word: "trouver",  de: "finden",       img: "w08_finden.png" },
 
-  { id: "w09_hoeren",    word: "écouter",  de: "hören",      img: "w09_hoeren.png" },
-  { id: "w10_sprechen",  word: "parler",   de: "sprechen",   img: "w10_sprechen.png" },
-  { id: "w11_lesen",     word: "lire",     de: "lesen",      img: "w11_lesen.png" },
-  { id: "w12_schreiben", word: "écrire",   de: "schreiben",  img: "w12_schreiben.png" }
+  // Pack 3: Nomen
+  { id: "w09_livre",    word: "livre",    de: "Buch",         img: "w09_buch.png" },
+  { id: "w10_page",     word: "page",     de: "Seite",        img: "w10_seite.png" },
+  { id: "w11_numero",   word: "numéro",   de: "Nummer",       img: "w11_nummer.png" },
+  { id: "w12_tache",    word: "tâche",    de: "Aufgabe",      img: "w12_aufgabe.png" }
 ];
+
+
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -1108,6 +1113,7 @@ function renderEnd() {
     start();
   };
 }
+
 
 
 
