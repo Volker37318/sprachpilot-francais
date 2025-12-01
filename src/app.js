@@ -2,7 +2,8 @@
 // Fix jetzt:
 // - Test C: Button "Weiter & später nochmal" erscheint erst NACH 3 Fehlversuchen (nicht permanent)
 // - Sprech-Hinweistext: statt "Sprich 1x ..." -> "Sprich das Wort 2x (kurz hintereinander) ..."
-// Hinweis: 2x sprechen = im selben Durchgang (z.B. "je je"), nicht zwei getrennte Versuche.
+// Neu (Feinabstimmung):
+// - Satzphase: kleine deutsche Übersetzung unter dem französischen Satz
 
 const LESSON_ID = "W1D1";
 
@@ -483,7 +484,6 @@ function renderLearn() {
       return;
     }
 
-    // ✅ Text geändert:
     setFeedback("fb", "Sprich das Wort 2x (kurz hintereinander) – dann kurze Pause…", null);
 
     try { window.speechSynthesis.cancel(); } catch {}
@@ -612,7 +612,6 @@ function renderReview() {
       return;
     }
 
-    // ✅ Text geändert:
     setFeedback("fb", "Sprich das Wort 2x (kurz hintereinander) – dann kurze Pause…", null);
 
     try { window.speechSynthesis.cancel(); } catch {}
@@ -925,7 +924,6 @@ function renderTestC() {
       return;
     }
 
-    // ✅ Text geändert:
     setFeedback("fb", "Sprich das Wort 2x (kurz hintereinander) – dann kurze Pause…", null);
 
     try { window.speechSynthesis.cancel(); } catch {}
@@ -956,7 +954,6 @@ function renderTestC() {
           const n = testC_failStreak[target.id];
 
           if (n >= TESTC_DEFER_AFTER) {
-            // ✅ Button jetzt einblenden (statt permanent oder sofort skip)
             if (btnDefer) btnDefer.style.display = "inline-flex";
             setFeedback("fb", "3× nichts verstanden. Du kannst jetzt weitergehen und später nochmal üben.", "bad");
             speakWord(target.word, 1.0);
@@ -988,7 +985,6 @@ function renderTestC() {
         const n = testC_failStreak[target.id];
 
         if (n >= TESTC_DEFER_AFTER) {
-          // ✅ Button jetzt einblenden (statt permanent oder automatisch skip)
           if (btnDefer) btnDefer.style.display = "inline-flex";
           setFeedback("fb", `3× falsch. Du kannst jetzt weitergehen und später nochmal üben.`, "bad");
           speakWord(target.word, 1.0);
@@ -1007,24 +1003,26 @@ function renderTestC() {
   };
 }
 
-// ---------- Satzphase (unverändert, Hinweis bleibt 1x, weil Satz) ----------
+// ---------- Satzphase (nur Übersetzung ergänzt) ----------
 function renderSentences() {
   if (window.__sent_stage == null) window.__sent_stage = "easy";
   if (window.__sent_idx == null) window.__sent_idx = 0;
 
+  // ✅ de ergänzt
   const SENTS_EASY = [
-    { text: "Je parle.",          imgId: "w10_sprechen" },
-    { text: "Vous écoutez.",      imgId: "w09_hoeren" },
-    { text: "J'ouvre la porte.",  imgId: "w08_tuer" },
-    { text: "J'écris.",           imgId: "w12_schreiben" },
-    { text: "Le livre.",          imgId: "w03_buch" },
-    { text: "Le cahier.",         imgId: "w04_heft" }
+    { text: "Je parle.",          de: "ich spreche.",                           imgId: "w10_sprechen" },
+    { text: "Vous écoutez.",      de: "sie hören zu.",                          imgId: "w09_hoeren" },
+    { text: "J'ouvre la porte.",  de: "ich öffne die tür.",                      imgId: "w08_tuer" },
+    { text: "J'écris.",           de: "ich schreibe.",                           imgId: "w12_schreiben" },
+    { text: "Le livre.",          de: "das buch.",                               imgId: "w03_buch" },
+    { text: "Le cahier.",         de: "das heft.",                               imgId: "w04_heft" }
   ];
 
+  // ✅ de ergänzt
   const SENTS_HARD = [
-    { text: "Je parle. Vous écoutez.",        imgId: "w10_sprechen" },
-    { text: "Vous écoutez et je parle.",      imgId: "w09_hoeren" },
-    { text: "J'ouvre la porte et je parle.",  imgId: "w08_tuer" }
+    { text: "Je parle. Vous écoutez.",        de: "ich spreche. sie hören zu.",                 imgId: "w10_sprechen" },
+    { text: "Vous écoutez et je parle.",      de: "sie hören zu und ich spreche.",             imgId: "w09_hoeren" },
+    { text: "J'ouvre la porte et je parle.",  de: "ich öffne die tür und ich spreche.",        imgId: "w08_tuer" }
   ];
 
   const list = (window.__sent_stage === "easy") ? SENTS_EASY : SENTS_HARD;
@@ -1055,6 +1053,11 @@ function renderSentences() {
       <div class="card card-word">
         <img src="${imgItem.img}" data-fallback="${escapeHtml(imgItem.fallbackImg)}" alt="" class="word-image">
         <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(s.text)}</div>
+
+        <!-- ✅ NEU: kleine deutsche Übersetzung -->
+        <div class="word-translation" style="margin-top:8px; font-size:13px; line-height:1.25; opacity:.85;">
+          ${escapeHtml(s.de || "")}
+        </div>
       </div>
 
       <div class="controls-audio">
@@ -1160,6 +1163,8 @@ function renderEnd() {
     render();
   };
 }
+
+
 
 
 
