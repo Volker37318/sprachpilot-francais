@@ -1,19 +1,30 @@
-// src/app.js – Vor-A1 / Klassensprache Französisch
-// Flow:
-// Block 1: Phase 1 (Lernen + Aussprache) → Phase 2 (Tippen, 4er Pack)
-// Block 2: Phase 1 → Phase 2
-// Block 3: Phase 1 → Phase 2
-// Danach: Phase 3 (Globales Hör-Quiz aus 12 Bildern, 4er Pack, ohne Beschriftung)
-// Danach: Phase 4 (Sätze nachsprechen)
-// Danach: Ende
+// src/app.js – Vor-A1 / Klassensprache Französisch (STABIL: feste 12 Bilder, Reihenfolge später leicht änderbar)
 //
+// System pro 4er-Pack:
+// 1) Lernen + Aussprache (Hören/Langsam/Sprechen/Später)
+//    - ab 80% -> nächstes Wort
+//    - nach 4x falsch -> Wort in Review-Container, dann weiter
+// 2) Test A (Wort sichtbar): Wort + (Hören/Langsam) -> richtiges Bild klicken
+//    - bis jedes der 4 Bilder 2× korrekt geklickt wurde (Fehler zählen nicht)
+// 3) Test B (nur Hören): Wort wird gesprochen (ohne Text) -> Bild klicken
+//    - bis jedes Bild 2× korrekt geklickt wurde (Fehler zählen nicht)
+// 4) Test C (Produktion): Bild -> Nutzer spricht Wort
+//    - bis jedes Bild 2× korrekt gesprochen wurde
+//    - unkorrekt zählt nicht
+//    - nach 3 Fehlversuchen: System sagt Wort (Lernhilfe), Wort bleibt im Review-Container
+//
+// Danach: nächstes 4er-Pack. Am Ende: Review-Container in 4er-Packs wiederholen. Dann Ende.
 
 const TARGET_LANG = "fr";
 const LESSON_ID = "W1D1";
+const TITLE = "Vor-A1 Training";
 
-const PASS_EXACT = 100;          // nur bei 100% automatisch weiter
-const FAILS_FOR_SKIP = 5;        // nach 5x falsch -> Skip-Button aktiv
-const AUTO_ADVANCE_MS = 2500;    // 2,5 Sekunden Anzeige bei 100%
+const PACK_SIZE = 4;
+
+const PASS_THRESHOLD = 80;         // ab 80% weiter
+const FAILS_TO_REVIEW = 4;         // nach 4x falsch im Learn -> Review-Container
+const TESTC_FAILS_BEFORE_TELL = 3; // nach 3 Fehlversuchen im Test C sagt System das Wort
+const AUTO_ADVANCE_MS = 650;       // kurze Anzeige bei Erfolg
 
 const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // => /assets/images/W1D1/
 
@@ -24,25 +35,47 @@ const status = (msg) => {
   console.log("[STATUS]", msg);
 };
 
-let lesson = null;
+// ----------------- FESTE 12 ITEMS (HIER SPÄTER REIHENFOLGE/WÖRTER ÄNDERN) -----------------
+// Wichtig: img muss auf deine vorhandenen 12 Bilddateien zeigen (wie bisher).
+const FIXED_ITEMS = [
+  { id: "ecouter",  word: "Écouter",  translation: "", img: IMAGE_DIR + "bild1-1.png", fallbackImg: "" },
+  { id: "repeter",  word: "Répéter",  translation: "", img: IMAGE_DIR + "bild1-2.png", fallbackImg: "" },
+  { id: "lire",     word: "Lire",     translation: "", img: IMAGE_DIR + "bild1-3.png", fallbackImg: "" },
+  { id: "ecrire",   word: "Écrire",   translation: "", img: IMAGE_DIR + "bild1-4.png", fallbackImg: "" },
 
-// Block-Flow
-let currentBlockIndex = 0;
-let currentPhase = "learn"; // "learn" | "shuffle" | "quiz" | "sentences"
-let currentItemIndex = 0;
+  { id: "voir",     word: "Voir",     translation: "", img: IMAGE_DIR + "bild2-1.png", fallbackImg: "" },
+  { id: "ouvrir",   word: "Ouvrir",   translation: "", img: IMAGE_DIR + "bild2-2.png", fallbackImg: "" },
+  { id: "fermer",   word: "Fermer",   translation: "", img: IMAGE_DIR + "bild2-3.png", fallbackImg: "" },
+  { id: "trouver",  word: "Trouver",  translation: "", img: IMAGE_DIR + "bild2-4.png", fallbackImg: "" },
 
-// Phase 2
-let shuffleOrder = [];
+  { id: "livre",    word: "Livre",    translation: "", img: IMAGE_DIR + "bild3-1.png", fallbackImg: "" },
+  { id: "page",     word: "Page",     translation: "", img: IMAGE_DIR + "bild3-2.png", fallbackImg: "" },
+  { id: "numero",   word: "Numéro",   translation: "", img: IMAGE_DIR + "bild3-3.png", fallbackImg: "" },
+  { id: "tache",    word: "Tâche",    translation: "", img: IMAGE_DIR + "bild4-4.png", fallbackImg: "" }
+];
 
-// Phase 3
-let quizPool = [];
-let quizTargetOrder = [];
-let quizIndex = 0;
-let quizAttemptsLeft = 3;
+// ----------------- GLOBAL STATE -----------------
+let orderedItems = [...FIXED_ITEMS]; // 12 items in fester Reihenfolge
+let mainIndex = 0;                   // nächster Index im Haupt-Flow
+let mode = "learn";                  // "learn" | "testA" | "testB" | "testC" | "review" | "end"
+let currentPack = [];                // aktuelle 4 Items
+let learnIndex = 0;                  // aktuelles Wort im Learn (0..3)
 
-// Phase 4
-let sentenceList = [];
-let sentenceIndex = 0;
+let learnFailCount = 0;              // Fehlschläge fürs aktuelle Wort (Learn)
+let autoStopTimer = null;
+let advanceTimer = null;
+
+// Review-Container (Einträge werden später nochmal geübt)
+let reviewSet = new Set();           // Set von item.id (in Einfüge-Reihenfolge)
+let reviewCursor = 0;                // rotiert durch Review-IDs
+
+// Tests – Mastery Counters (pro Pack)
+let testA_correct = new Map();       // item.id -> 0..2
+let testB_correct = new Map();       // item.id -> 0..2
+let testC_correct = new Map();       // item.id -> 0..2
+
+let testTargetId = null;             // welches Item ist gerade dran
+let testC_failStreak = 0;            // Fehlversuche am aktuellen Test-C Target
 
 // TTS
 let ttsSupported = "speechSynthesis" in window;
@@ -52,21 +85,15 @@ let ttsActive = false;
 
 // ASR state
 let micRecording = false;
-let autoStopTimer = null;
-let advanceTimer = null;
-
-// Fail counter (pro aktuellem Wort/Satz)
-let currentFailCount = 0;
+let _sr = null;
+let _srFinal = "";
+let _srInterim = "";
+let _srResolve = null;
 
 // UI lock refresh callback
 let _uiRefreshLocks = null;
 function setUiRefreshLocks(fn) { _uiRefreshLocks = fn; }
 function refreshLocks() { try { _uiRefreshLocks && _uiRefreshLocks(); } catch {} }
-
-const ARTICLES = new Set(["le", "la", "les", "un", "une", "des", "du", "de", "d", "l"]);
-
-const BTN_GRAD = "background: linear-gradient(135deg,#ff8a00,#ffd54a); border:1px solid rgba(0,0,0,.14); color:#1b1b1b; font-weight:900;";
-const BTN_GRAY = "background:#cbd5e1; border:1px solid rgba(0,0,0,.12); color:#64748b; font-weight:900; cursor:not-allowed; filter:grayscale(1);";
 
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
@@ -75,60 +102,25 @@ function clearAdvanceTimer() {
   advanceTimer = null;
 }
 
-// ----------------- WORD → IMAGE (HARDCODED) -----------------
-
-function wordKeyForMap(raw) {
-  return String(raw || "")
-    .toLowerCase()
-    .normalize("NFD")
-    .replace(/\p{Diacritic}/gu, "")
-    .replace(/[’']/g, " ")
-    .replace(/[^a-z0-9 -]/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function clearAutoStopTimer() {
+  try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+  autoStopTimer = null;
 }
 
-function mapKeyFromPhrase(wordOrPhrase) {
-  const k = wordKeyForMap(wordOrPhrase);
-  const parts = k.split(" ").filter(Boolean);
-  if (!parts.length) return "";
+// ----------------- WORD → KEY HELPERS (für Scoring) -----------------
+const ARTICLES = new Set(["le", "la", "les", "un", "une", "des", "du", "de", "d", "l"]);
 
-  let start = 0;
-  while (start < parts.length && ARTICLES.has(parts[start])) start++;
-
-  const core = parts.slice(start);
-  if (core.length) {
-    const last = core[core.length - 1].replace(/[0-9]+$/g, "");
-    return last || core[core.length - 1];
-  }
-  return parts[parts.length - 1].replace(/[0-9]+$/g, "");
-}
-
-const WORD_TO_IMAGE_FILE = {
-  ecouter: "bild1-1.png",
-  repeter: "bild1-2.png",
-  lire: "bild1-3.png",
-  ecrire: "bild1-4.png",
-
-  voir: "bild2-1.png",
-  ouvrir: "bild2-2.png",
-  fermer: "bild2-3.png",
-  trouver: "bild2-4.png",
-
-  livre: "bild3-1.png",
-  page: "bild3-2.png",
-  numero: "bild3-3.png",
-
-  tache: "bild4-4.png"
-};
-
-function imageSrcForWord(wordOrPhrase) {
-  const key = mapKeyFromPhrase(wordOrPhrase);
-  const file = WORD_TO_IMAGE_FILE[key];
-  return file ? (IMAGE_DIR + file) : "";
+function escapeHtml(str) {
+  return String(str || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function attachImgFallbacks() {
+  if (!appEl) return;
   appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
     const fb = img.getAttribute("data-fallback") || "";
     img.onerror = () => {
@@ -138,12 +130,71 @@ function attachImgFallbacks() {
   });
 }
 
-// ----------------- LOCAL ASR (Browser SpeechRecognition) -----------------
-let _sr = null;
-let _srFinal = "";
-let _srInterim = "";
-let _srResolve = null;
+function shuffleArray(arr) {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
+function pickNextTargetId(masterMap) {
+  const need = currentPack
+    .filter(it => (masterMap.get(it.id) || 0) < 2)
+    .map(it => it.id);
+
+  if (!need.length) return null;
+  return need[Math.floor(Math.random() * need.length)];
+}
+
+function allMastered(masterMap) {
+  for (const it of currentPack) {
+    if ((masterMap.get(it.id) || 0) < 2) return false;
+  }
+  return true;
+}
+
+function packProgressText(masterMap) {
+  let sum = 0;
+  let max = currentPack.length * 2;
+  for (const it of currentPack) sum += Math.min(2, (masterMap.get(it.id) || 0));
+  return `${sum}/${max}`;
+}
+
+function setFeedback(elId, text, kind) {
+  const el = document.getElementById(elId);
+  if (!el) return;
+  el.textContent = text || "";
+  if (kind === "ok") {
+    el.style.color = "#16a34a";
+    el.style.fontWeight = "900";
+  } else if (kind === "bad") {
+    el.style.color = "#dc2626";
+    el.style.fontWeight = "900";
+  } else {
+    el.style.color = "";
+    el.style.fontWeight = "";
+  }
+}
+
+// ----------------- AUDIO LOCKS -----------------
+function setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater }) {
+  const localRefresh = () => {
+    const rec = micRecording;
+    const tts = ttsActive;
+
+    if (btnHear) btnHear.disabled = rec || tts;
+    if (btnHearSlow) btnHearSlow.disabled = rec || tts;
+
+    if (btnSpeak) btnSpeak.disabled = rec || tts;
+    if (btnLater) btnLater.disabled = rec || tts;
+  };
+  setUiRefreshLocks(localRefresh);
+  localRefresh();
+}
+
+// ----------------- LOCAL ASR (Browser SpeechRecognition) -----------------
 function speechRecAvailable() {
   return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
@@ -209,7 +260,7 @@ function stopBrowserASR() {
   });
 }
 
-// ----------------- SCORING -----------------
+// ----------------- SCORING (wie bisher, aber PASS = >=80) -----------------
 function _norm(s) {
   return String(s || "")
     .toLowerCase()
@@ -295,9 +346,8 @@ function scoreSpeech(target, heard) {
   const tCan = canonicalFrenchForScoring(target);
   const hCan = canonicalFrenchForScoring(heard);
 
-  // LOCK: Wenn Kanonisch identisch -> 100 (z.B. "Ferme le livre" vs "fermer le livre")
   if (tCan && hCan && tCan === hCan) {
-    return { overall: 100, grade: "excellent", pass100: true };
+    return { overall: 100, grade: "excellent", pass: true };
   }
 
   const cs = _charSimilarity(tCan || target, hCan || heard);
@@ -307,193 +357,142 @@ function scoreSpeech(target, heard) {
 
   return {
     overall,
-    grade: overall >= 90 ? "excellent" : overall >= 75 ? "good" : overall >= 60 ? "ok" : "try_again",
-    pass100: overall >= PASS_EXACT
+    grade: overall >= 90 ? "excellent" : overall >= 80 ? "good" : overall >= 65 ? "ok" : "try_again",
+    pass: overall >= PASS_THRESHOLD
   };
 }
 
-// ----------------- INIT -----------------
+// ----------------- INIT (ohne JSON, nur feste Items) -----------------
 initTTS();
+startProgram();
 
-loadLesson(TARGET_LANG, LESSON_ID)
-  .then((data) => {
-    lesson = data;
-    buildQuizPoolFromLesson();
-    buildSentenceList();
-    startLesson();
-  })
-  .catch((err) => {
-    console.error(err);
-    appEl.textContent = "Fehler beim Laden der Lektion.";
-    status(err.message);
-  });
-
-async function loadLesson(lang, lessonId) {
-  const res = await fetch(`lessons/${lang}/${lessonId}.json`);
-  if (!res.ok) throw new Error(`Konnte Lektion nicht laden: ${res.status}`);
-  return await res.json();
-}
-
-function startLesson() {
+// ----------------- PROGRAM FLOW -----------------
+function startProgram() {
   clearAdvanceTimer();
-  currentBlockIndex = 0;
-  currentPhase = "learn";
-  currentItemIndex = 0;
-  shuffleOrder = [];
-  quizIndex = 0;
-  quizAttemptsLeft = 3;
-  sentenceIndex = 0;
-  currentFailCount = 0;
+  stopAllAudioStates();
+
+  mainIndex = 0;
+  mode = "learn";
+  reviewSet = new Set();
+  reviewCursor = 0;
+
+  loadNextPackFromMain();
   render();
 }
 
-function advanceFromLearn(block) {
+function loadNextPackFromMain() {
+  currentPack = orderedItems.slice(mainIndex, mainIndex + PACK_SIZE);
+  learnIndex = 0;
+  learnFailCount = 0;
+  resetPackTests();
+
+  if (!currentPack.length) {
+    return startReviewMode();
+  }
+}
+
+function startReviewMode() {
+  mode = "review";
+  const ids = Array.from(reviewSet);
+
+  if (!ids.length) {
+    mode = "end";
+    return;
+  }
+
+  if (reviewCursor >= ids.length) reviewCursor = 0;
+
+  currentPack = ids
+    .slice(reviewCursor, reviewCursor + PACK_SIZE)
+    .map(id => orderedItems.find(x => x.id === id))
+    .filter(Boolean);
+
+  reviewCursor += PACK_SIZE;
+
+  learnIndex = 0;
+  learnFailCount = 0;
+  resetPackTests();
+
+  if (!currentPack.length) {
+    mode = "end";
+  }
+}
+
+function completeCurrentPack() {
   stopAllAudioStates();
   clearAdvanceTimer();
 
-  if (currentItemIndex < block.items.length - 1) {
-    currentItemIndex++;
+  if (mode === "review") {
+    // Aus Review raus, wenn in Test C 2× korrekt gesprochen
+    for (const it of currentPack) {
+      const c = testC_correct.get(it.id) || 0;
+      if (c >= 2) reviewSet.delete(it.id);
+    }
+    startReviewMode();
     return render();
   }
 
-  currentPhase = "shuffle";
-  currentItemIndex = 0;
-  shuffleOrder = shuffleArray([...block.items]);
-  render();
+  mainIndex += PACK_SIZE;
+  loadNextPackFromMain();
+  return render();
 }
 
-function advanceFromSentence() {
-  stopAllAudioStates();
-  clearAdvanceTimer();
+function resetPackTests() {
+  testA_correct = new Map();
+  testB_correct = new Map();
+  testC_correct = new Map();
+  testTargetId = null;
+  testC_failStreak = 0;
 
-  sentenceIndex++;
-  renderSentencePhase();
-}
-
-// ----------------- QUIZ POOL (12) -----------------
-function buildQuizPoolFromLesson() {
-  quizPool = [];
-  if (!lesson?.blocks?.length) return;
-
-  for (let b = 0; b < lesson.blocks.length; b++) {
-    const block = lesson.blocks[b];
-    for (let i = 0; i < (block.items || []).length; i++) {
-      const it = block.items[i];
-      const w = String(it.word || "").trim();
-      if (!w) continue;
-
-      const mapped = imageSrcForWord(w);
-      const img = mapped || (it.image || "");
-
-      quizPool.push({
-        qid: `b${b + 1}i${i + 1}:${mapKeyFromPhrase(w)}`,
-        word: w,
-        img,
-        fallbackImg: it.image || ""
-      });
-
-      if (quizPool.length >= 12) break;
-    }
-    if (quizPool.length >= 12) break;
+  for (const it of currentPack) {
+    testA_correct.set(it.id, 0);
+    testB_correct.set(it.id, 0);
+    testC_correct.set(it.id, 0);
   }
-
-  if (quizPool.length < 12) {
-    const existing = new Set(quizPool.map(x => mapKeyFromPhrase(x.word)));
-    for (const [k, file] of Object.entries(WORD_TO_IMAGE_FILE)) {
-      if (existing.has(k)) continue;
-      quizPool.push({
-        qid: `map:${k}`,
-        word: k,
-        img: IMAGE_DIR + file,
-        fallbackImg: ""
-      });
-      if (quizPool.length >= 12) break;
-    }
-  }
-
-  quizTargetOrder = shuffleArray([...quizPool]);
 }
 
-// ----------------- SENTENCES (Phase 4) -----------------
-function buildSentenceList() {
-  const seen = new Set((quizPool || []).map(x => mapKeyFromPhrase(x.word)).filter(Boolean));
-  const has = (k) => seen.has(k);
-
-  const list = [];
-
-  if (has("ecouter") && has("repeter")) list.push({ text: "Écoute et répète.", de: "Hör zu und wiederhole." });
-  if (has("ouvrir") && has("livre"))   list.push({ text: "Ouvre le livre.", de: "Öffne das Buch." });
-  if (has("fermer") && has("livre"))   list.push({ text: "Ferme le livre.", de: "Schließe das Buch." });
-  if (has("lire") && has("page"))      list.push({ text: "Lis la page.", de: "Lies die Seite." });
-  if (has("ecrire") && has("numero"))  list.push({ text: "Écris le numéro.", de: "Schreibe die Nummer." });
-  if (has("trouver") && has("tache"))  list.push({ text: "Trouve la tâche.", de: "Finde die Aufgabe." });
-  if (has("voir") && has("page"))      list.push({ text: "Vois la page.", de: "Sieh die Seite." });
-  if (has("repeter") && has("numero")) list.push({ text: "Répète le numéro.", de: "Wiederhole die Nummer." });
-
-  sentenceList = list;
-}
-
-// ----------------- RENDER -----------------
 function render() {
-  if (!lesson) return;
+  if (!appEl) return;
 
-  if (currentPhase === "learn") return renderLearnPhase(lesson.blocks[currentBlockIndex]);
-  if (currentPhase === "shuffle") return renderShufflePhase(lesson.blocks[currentBlockIndex]);
-  if (currentPhase === "quiz") return renderGlobalQuizPhase();
-  if (currentPhase === "sentences") return renderSentencePhase();
-
-  renderEndScreen();
+  if (mode === "end") return renderEndScreen();
+  if (mode === "learn" || mode === "review") return renderLearnWord();
+  if (mode === "testA") return renderTestA();
+  if (mode === "testB") return renderTestB();
+  if (mode === "testC") return renderTestC();
 }
 
-// ------- button style helper -------
-function styleSpeakButtons(btnSpeak, btnSkip) {
-  const skipActive = currentFailCount >= FAILS_FOR_SKIP;
-
-  // Speak: aktiv = Gradient, ab 5 fails grau & disabled
-  if (skipActive) {
-    btnSpeak.disabled = true;
-    btnSpeak.setAttribute("style", BTN_GRAY);
-  } else {
-    btnSpeak.disabled = false;
-    btnSpeak.setAttribute("style", BTN_GRAD);
-  }
-
-  // Skip: ab 5 fails aktiv (Gradient), sonst disabled (grau/optisch neutral)
-  if (skipActive) {
-    btnSkip.disabled = false;
-    btnSkip.setAttribute("style", BTN_GRAD);
-  } else {
-    btnSkip.disabled = true;
-    // leicht neutral, nicht voll grau wie disabled speak
-    btnSkip.setAttribute("style", "background:#eef2ff; border:1px solid rgba(0,0,0,.12); color:#64748b; font-weight:900;");
-  }
-}
-
-// ----------------- Phase 1 (Learn + Speak) -----------------
-function renderLearnPhase(block) {
+// ----------------- LEARN (Wort für Wort) -----------------
+function renderLearnWord() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
-  const item = block.items[currentItemIndex];
-  const blockNo = currentBlockIndex + 1;
+  const it = currentPack[learnIndex];
+  if (!it) {
+    mode = "testA";
+    testTargetId = null;
+    return render();
+  }
 
-  // Reset Failcounter pro Wort
-  currentFailCount = 0;
+  const isReview = (mode === "review");
+  const total = orderedItems.length || 12;
+  const globalPos = Math.min(total, isReview ? total : (mainIndex + learnIndex + 1));
+  const packNo = isReview ? "Wiederholung" : `Pack ${Math.floor(mainIndex / PACK_SIZE) + 1} von ${Math.ceil(total / PACK_SIZE)}`;
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
-        <div class="badge">Tag 1 – ${lesson.title || "Französisch"}</div>
-        <div class="badge">Block ${blockNo} von ${lesson.blocks.length}</div>
-        <div class="badge">Wort ${currentItemIndex + 1} von ${block.items.length}</div>
+        <div class="badge">${escapeHtml(TITLE)} – ${escapeHtml(TARGET_LANG.toUpperCase())}</div>
+        <div class="badge">${escapeHtml(packNo)}</div>
+        <div class="badge">Wort ${learnIndex + 1} von ${currentPack.length}${isReview ? " (Review)" : ""}</div>
+        <div class="badge">Gesamt ${globalPos} von ${total}</div>
       </div>
 
-      <h1>${block.label}</h1>
+      <h1>${isReview ? "Wiederholung" : "Lernen"}</h1>
 
       <div class="card card-word">
-        <img src="${item.image}" alt="${escapeHtml(item.word)}" class="word-image">
-        <div class="word-text">${escapeHtml(item.word)}</div>
-        <div class="word-translation">${escapeHtml(item.translation || "")}</div>
+        <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="${escapeHtml(it.word)}" class="word-image">
+        <div class="word-text">${escapeHtml(it.word)}</div>
+        <div class="word-translation">${escapeHtml(it.translation || "")}</div>
       </div>
 
       <div class="controls-audio">
@@ -503,342 +502,311 @@ function renderLearnPhase(block) {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <button id="btn-skip" class="btn secondary" disabled>Später noch einmal</button>
-        <div id="speak-feedback" class="feedback" style="flex-basis:100%;"></div>
-      </div>
-    </div>
-  `;
-
-  const btnHear = document.getElementById("btn-hear");
-  const btnHearSlow = document.getElementById("btn-hear-slow");
-  const btnSpeak = document.getElementById("btn-speak");
-  const btnSkip = document.getElementById("btn-skip");
-
-  styleSpeakButtons(btnSpeak, btnSkip);
-
-  const localRefresh = () => {
-    const rec = micRecording;
-    const tts = ttsActive;
-
-    // Verriegelung: Keine TTS-Buttons während Mic/TTS
-    btnHear.disabled = rec || tts;
-    btnHearSlow.disabled = rec || tts;
-
-    // Während Mic/TTS: Speak/Skip ebenfalls blocken, danach Style wieder setzen
-    if (rec || tts) {
-      btnSpeak.disabled = true;
-      btnSkip.disabled = true;
-    } else {
-      styleSpeakButtons(btnSpeak, btnSkip);
-    }
-  };
-  setUiRefreshLocks(localRefresh);
-  localRefresh();
-
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(item.word, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(item.word, 0.7); };
-
-  btnSkip.onclick = async () => {
-    setSpeakFeedback("Wir kommen später zurück.", null);
-    // kurzer Moment für Feedback, dann automatisch weiter
-    await sleep(650);
-    advanceFromLearn(block);
-  };
-
-  btnSpeak.onclick = async () => {
-    if (micRecording) return;
-    if (currentFailCount >= FAILS_FOR_SKIP) return; // Speak ist ab 5 fails passiv
-
-    const clearAutoStop = () => {
-      try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
-      autoStopTimer = null;
-    };
-
-    const stopAndAssess = async () => {
-      if (!micRecording) return;
-
-      clearAutoStop();
-      setSpeakFeedback("Verarbeite…", null);
-
-      const recognizedText = await stopBrowserASR();
-      const res = scoreSpeech(item.word, recognizedText);
-
-      micRecording = false;
-      refreshLocks();
-
-      if (!res.pass100) currentFailCount++;
-
-      if (res.pass100) {
-        setSpeakFeedback(
-          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Perfekt!`,
-          true
-        );
-
-        // 4 Sekunden anzeigen, dann automatisch weiter
-        clearAdvanceTimer();
-        advanceTimer = setTimeout(() => {
-          advanceFromLearn(block);
-        }, AUTO_ADVANCE_MS);
-
-        return;
-      }
-
-      // nicht 100%
-      if (currentFailCount >= FAILS_FOR_SKIP) {
-        // Speak grau, Skip aktiv
-        styleSpeakButtons(btnSpeak, btnSkip);
-      }
-
-      setSpeakFeedback(
-        `Aussprache: ${res.overall}% (${res.grade})` +
-        ` · Erkannt: „${recognizedText || "(leer)"}“` +
-        ` · Nochmal (${currentFailCount}/${FAILS_FOR_SKIP})`,
-        false
-      );
-    };
-
-    try {
-      stopAllAudioStates();
-
-      if (!speechRecAvailable()) {
-        setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
-        return;
-      }
-
-      setSpeakFeedback("Sprich jetzt. Aufnahme stoppt automatisch.", null);
-
-      // TTS aus, damit Mic nicht die Stimme einsammelt
-      try { window.speechSynthesis.cancel(); } catch {}
-      ttsActive = false;
-      refreshLocks();
-      await sleep(150);
-
-      const started = startBrowserASR("fr-FR");
-      if (!started) {
-        setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
-        return;
-      }
-
-      micRecording = true;
-      refreshLocks();
-
-      clearAutoStop();
-      autoStopTimer = setTimeout(() => {
-        stopAndAssess().catch((e) => {
-          console.error(e);
-          micRecording = false;
-          refreshLocks();
-          setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
-        });
-      }, 3500);
-
-    } catch (e) {
-      console.error(e);
-      try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
-      autoStopTimer = null;
-      micRecording = false;
-      stopAllAudioStates();
-      refreshLocks();
-      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
-    }
-  };
-}
-
-// ----------------- Phase 2 (Tippen) -----------------
-function renderShufflePhase(block) {
-  clearAdvanceTimer();
-  stopAllAudioStates();
-
-  const blockNo = currentBlockIndex + 1;
-
-  if (!shuffleOrder || shuffleOrder.length !== block.items.length) {
-    shuffleOrder = shuffleArray([...block.items]);
-  }
-
-  if (currentItemIndex >= shuffleOrder.length) {
-    if (currentBlockIndex < lesson.blocks.length - 1 && currentBlockIndex < 2) {
-      currentBlockIndex++;
-      currentPhase = "learn";
-      currentItemIndex = 0;
-      shuffleOrder = [];
-      return render();
-    }
-
-    currentPhase = "quiz";
-    quizIndex = 0;
-    quizAttemptsLeft = 3;
-    quizTargetOrder = shuffleArray([...quizPool]);
-    return render();
-  }
-
-  const target = shuffleOrder[currentItemIndex];
-  const gridItems = shuffleArray([...block.items]);
-
-  appEl.innerHTML = `
-    <div class="screen screen-shuffle">
-      <div class="meta">
-        <div class="badge">Block ${blockNo} – Phase 2</div>
-        <div class="badge">Aufgabe ${currentItemIndex + 1} von ${shuffleOrder.length}</div>
+        <button id="btn-later" class="btn secondary">Später noch einmal</button>
+        <div id="learn-feedback" class="feedback" style="flex-basis:100%;"></div>
       </div>
 
-      <h1>Bilder & Wörter</h1>
-      <p>Höre das Wort und tippe das richtige Bild.</p>
-
-      <div class="icon-grid">
-        ${gridItems.map((it) => {
-          const mapped = imageSrcForWord(it.word);
-          const src = mapped || (it.image || "");
-          const fb = it.image || "";
-          return `
-            <button class="icon-card" data-word="${escapeHtml(it.word)}" aria-label="Option">
-              <img src="${src}" data-fallback="${escapeHtml(fb)}" alt="">
-            </button>
-          `;
-        }).join("")}
+      <div style="margin-top:10px; font-size:13px; opacity:.8;">
+        Fehlversuche: <strong>${learnFailCount}</strong> / ${FAILS_TO_REVIEW}
       </div>
-
-      <div class="controls">
-        <button id="btn-play-target" class="btn primary">Wort anhören</button>
-      </div>
-
-      <div id="shuffle-feedback" class="feedback"></div>
     </div>
   `;
 
   attachImgFallbacks();
 
-  const feedbackEl = document.getElementById("shuffle-feedback");
-  const playTarget = () => speakWord(target.word, 1.0);
-  document.getElementById("btn-play-target").onclick = playTarget;
-  playTarget();
+  const btnHear = document.getElementById("btn-hear");
+  const btnHearSlow = document.getElementById("btn-hear-slow");
+  const btnSpeak = document.getElementById("btn-speak");
+  const btnLater = document.getElementById("btn-later");
 
-  appEl.querySelectorAll(".icon-card").forEach((btn) => {
-    btn.onclick = () => {
-      const w = btn.getAttribute("data-word") || "";
-      if (canonicalFrenchForScoring(w) !== canonicalFrenchForScoring(target.word)) {
-        feedbackEl.textContent = "Falsch. Tippe ein anderes Bild.";
-        return;
+  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater });
+
+  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(it.word, 1.0); };
+  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(it.word, 0.7); };
+
+  btnLater.onclick = async () => {
+    if (micRecording || ttsActive) return;
+    reviewSet.add(it.id);
+    setFeedback("learn-feedback", "Okay – dieses Wort kommt später nochmal (Review).", "ok");
+    await sleep(500);
+    goNextLearnWord();
+  };
+
+  btnSpeak.onclick = async () => {
+    if (micRecording || ttsActive) return;
+
+    stopAllAudioStates();
+
+    if (!speechRecAvailable()) {
+      setFeedback("learn-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
+
+    setFeedback("learn-feedback", "Sprich jetzt. Aufnahme stoppt automatisch.", null);
+
+    try { window.speechSynthesis.cancel(); } catch {}
+    ttsActive = false;
+    refreshLocks();
+    await sleep(120);
+
+    const started = startBrowserASR("fr-FR");
+    if (!started) {
+      setFeedback("learn-feedback", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
+      return;
+    }
+
+    micRecording = true;
+    refreshLocks();
+
+    clearAutoStopTimer();
+    autoStopTimer = setTimeout(async () => {
+      try {
+        setFeedback("learn-feedback", "Verarbeite…", null);
+
+        const recognizedText = await stopBrowserASR();
+        const res = scoreSpeech(it.word, recognizedText);
+
+        micRecording = false;
+        refreshLocks();
+
+        if (res.pass) {
+          setFeedback(
+            "learn-feedback",
+            `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Weiter!`,
+            "ok"
+          );
+          clearAdvanceTimer();
+          advanceTimer = setTimeout(() => goNextLearnWord(), AUTO_ADVANCE_MS);
+          return;
+        }
+
+        learnFailCount++;
+        setFeedback(
+          "learn-feedback",
+          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Nochmal.`,
+          "bad"
+        );
+
+        if (learnFailCount >= FAILS_TO_REVIEW) {
+          reviewSet.add(it.id);
+          setFeedback("learn-feedback", "Noch nicht sicher. Dieses Wort kommt später nochmal (Review).", "bad");
+          clearAdvanceTimer();
+          advanceTimer = setTimeout(() => goNextLearnWord(true), 900);
+        }
+      } catch (e) {
+        console.error(e);
+        micRecording = false;
+        refreshLocks();
+        setFeedback("learn-feedback", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
       }
-      feedbackEl.textContent = "Richtig!";
-      setTimeout(() => {
-        currentItemIndex++;
-        renderShufflePhase(block);
-      }, 650);
-    };
-  });
+    }, 3500);
+  };
 }
 
-// ----------------- Phase 3 (Global Quiz) -----------------
-function renderGlobalQuizPhase() {
+function goNextLearnWord(resetFail = false) {
+  stopAllAudioStates();
+  clearAdvanceTimer();
+  if (resetFail) learnFailCount = 0;
+
+  learnIndex++;
+  learnFailCount = 0;
+  renderLearnWord();
+}
+
+// ----------------- TEST A (WORT SICHTBAR) -----------------
+function renderTestA() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
-  if (!quizTargetOrder?.length) quizTargetOrder = shuffleArray([...quizPool]);
-
-  if (quizIndex >= quizTargetOrder.length) {
-    currentPhase = "sentences";
-    sentenceIndex = 0;
+  if (testTargetId == null) testTargetId = pickNextTargetId(testA_correct);
+  if (testTargetId == null) {
+    mode = "testB";
+    testTargetId = null;
     return render();
   }
 
-  const target = quizTargetOrder[quizIndex];
-  const others = quizPool.filter((x) => x.qid !== target.qid);
-  const distractors = takeN(shuffleArray(others), 3);
-  const pack = shuffleArray([target, ...distractors]);
+  const target = currentPack.find(x => x.id === testTargetId);
+  const packShuffled = shuffleArray([...currentPack]);
 
   appEl.innerHTML = `
     <div class="screen screen-quiz">
       <div class="meta">
-        <div class="badge">Phase 3 – Hör-Quiz</div>
-        <div class="badge">Aufgabe ${quizIndex + 1} von ${quizTargetOrder.length}</div>
-        <div class="badge">Versuche: ${quizAttemptsLeft}</div>
+        <div class="badge">Test A – Wort sichtbar</div>
+        <div class="badge">Ziel: jedes Bild 2× korrekt</div>
+        <div class="badge">Fortschritt: ${packProgressText(testA_correct)}</div>
       </div>
 
-      <h1>Hör-Quiz</h1>
-      <p>Höre das Wort und tippe auf das richtige Bild.</p>
+      <h1>Welches Bild passt?</h1>
+      <div class="card card-word" style="text-align:center;">
+        <div class="word-text" style="font-size:30px; line-height:1.1;">${escapeHtml(target.word)}</div>
+        <div class="word-translation" style="margin-top:8px;">${escapeHtml(target.translation || "")}</div>
+      </div>
 
       <div class="icon-grid">
-        ${pack.map((it) => `
-          <button class="icon-card" data-qid="${it.qid}" aria-label="Option">
+        ${packShuffled.map((it) => `
+          <button class="icon-card" data-id="${it.id}" aria-label="Option">
             <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="">
           </button>
         `).join("")}
       </div>
 
-      <div class="controls">
-        <button id="btn-play-quiz" class="btn primary">Wort abspielen</button>
+      <div class="controls-audio">
+        <button id="btn-hear" class="btn primary">Hören</button>
+        <button id="btn-hear-slow" class="btn secondary">Langsam</button>
       </div>
 
-      <div id="quiz-feedback" class="feedback"></div>
+      <div id="testA-feedback" class="feedback"></div>
     </div>
   `;
 
   attachImgFallbacks();
 
-  const feedbackEl = document.getElementById("quiz-feedback");
-  const playTarget = () => speakWord(target.word, 1.0);
-  document.getElementById("btn-play-quiz").onclick = playTarget;
-  playTarget();
+  const btnHear = document.getElementById("btn-hear");
+  const btnHearSlow = document.getElementById("btn-hear-slow");
+  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak: null, btnLater: null });
 
-  const markCorrect = () => {
-    appEl.querySelector(`.icon-card[data-qid="${target.qid}"]`)?.classList.add("correct");
-  };
+  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 1.0); };
+  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 0.7); };
+
+  speakWord(target.word, 1.0);
 
   appEl.querySelectorAll(".icon-card").forEach((btn) => {
-    btn.onclick = () => {
-      const qid = btn.getAttribute("data-qid");
-      if (qid === target.qid) {
-        feedbackEl.textContent = "Richtig!";
-        markCorrect();
-        setTimeout(() => {
-          quizAttemptsLeft = 3;
-          quizIndex++;
-          renderGlobalQuizPhase();
-        }, 800);
-      } else {
-        quizAttemptsLeft--;
-        if (quizAttemptsLeft > 0) {
-          feedbackEl.textContent = `Falsch. Noch ${quizAttemptsLeft} Versuch(e).`;
-        } else {
-          feedbackEl.textContent = "Leider falsch. Das richtige Bild ist markiert.";
-          markCorrect();
-          setTimeout(() => {
-            quizAttemptsLeft = 3;
-            quizIndex++;
-            renderGlobalQuizPhase();
-          }, 1000);
+    btn.onclick = async () => {
+      if (ttsActive || micRecording) return;
+
+      const id = btn.getAttribute("data-id");
+      if (id === target.id) {
+        const c = (testA_correct.get(target.id) || 0) + 1;
+        testA_correct.set(target.id, Math.min(2, c));
+        setFeedback("testA-feedback", "Richtig!", "ok");
+
+        await sleep(550);
+
+        if (allMastered(testA_correct)) {
+          mode = "testB";
+          testTargetId = null;
+          return render();
         }
+
+        testTargetId = pickNextTargetId(testA_correct);
+        return renderTestA();
+      } else {
+        setFeedback("testA-feedback", "Falsch. Nicht gezählt – versuch es nochmal.", "bad");
       }
     };
   });
 }
 
-// ----------------- Phase 4 (Sätze) -----------------
-function renderSentencePhase() {
+// ----------------- TEST B (NUR HÖREN) -----------------
+function renderTestB() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
-  if (!sentenceList?.length || sentenceIndex >= sentenceList.length) {
-    return renderEndScreen();
+  if (testTargetId == null) testTargetId = pickNextTargetId(testB_correct);
+  if (testTargetId == null) {
+    mode = "testC";
+    testTargetId = null;
+    testC_failStreak = 0;
+    return render();
   }
 
-  const s = sentenceList[sentenceIndex];
+  const target = currentPack.find(x => x.id === testTargetId);
+  const packShuffled = shuffleArray([...currentPack]);
 
-  // Reset Failcounter pro Satz
-  currentFailCount = 0;
+  appEl.innerHTML = `
+    <div class="screen screen-quiz">
+      <div class="meta">
+        <div class="badge">Test B – Nur hören</div>
+        <div class="badge">Ziel: jedes Bild 2× korrekt</div>
+        <div class="badge">Fortschritt: ${packProgressText(testB_correct)}</div>
+      </div>
+
+      <h1>Hör zu und wähle</h1>
+      <p>Das Wort wird gesprochen. Tippe das passende Bild an.</p>
+
+      <div class="icon-grid">
+        ${packShuffled.map((it) => `
+          <button class="icon-card" data-id="${it.id}" aria-label="Option">
+            <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="">
+          </button>
+        `).join("")}
+      </div>
+
+      <div class="controls-audio">
+        <button id="btn-hear" class="btn primary">Hören</button>
+        <button id="btn-hear-slow" class="btn secondary">Langsam</button>
+      </div>
+
+      <div id="testB-feedback" class="feedback"></div>
+    </div>
+  `;
+
+  attachImgFallbacks();
+
+  const btnHear = document.getElementById("btn-hear");
+  const btnHearSlow = document.getElementById("btn-hear-slow");
+  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak: null, btnLater: null });
+
+  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 1.0); };
+  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 0.7); };
+
+  speakWord(target.word, 1.0);
+
+  appEl.querySelectorAll(".icon-card").forEach((btn) => {
+    btn.onclick = async () => {
+      if (ttsActive || micRecording) return;
+
+      const id = btn.getAttribute("data-id");
+      if (id === target.id) {
+        const c = (testB_correct.get(target.id) || 0) + 1;
+        testB_correct.set(target.id, Math.min(2, c));
+        setFeedback("testB-feedback", "Richtig!", "ok");
+
+        await sleep(550);
+
+        if (allMastered(testB_correct)) {
+          mode = "testC";
+          testTargetId = null;
+          testC_failStreak = 0;
+          return render();
+        }
+
+        testTargetId = pickNextTargetId(testB_correct);
+        return renderTestB();
+      } else {
+        setFeedback("testB-feedback", "Falsch. Nicht gezählt – hör nochmal.", "bad");
+      }
+    };
+  });
+}
+
+// ----------------- TEST C (BILD → SPRECHEN) -----------------
+function renderTestC() {
+  clearAdvanceTimer();
+  stopAllAudioStates();
+
+  if (testTargetId == null) testTargetId = pickNextTargetId(testC_correct);
+
+  if (testTargetId == null) {
+    completeCurrentPack();
+    return;
+  }
+
+  const target = currentPack.find(x => x.id === testTargetId);
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
-        <div class="badge">Phase 4 – Sätze</div>
-        <div class="badge">Satz ${sentenceIndex + 1} von ${sentenceList.length}</div>
+        <div class="badge">Test C – Bild sprechen</div>
+        <div class="badge">Ziel: jedes Bild 2× korrekt sprechen</div>
+        <div class="badge">Fortschritt: ${packProgressText(testC_correct)}</div>
       </div>
 
-      <h1>Satz nachsprechen</h1>
+      <h1>Wie heißt das?</h1>
 
-      <div class="card card-word" style="text-align:center;">
-        <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(s.text)}</div>
-        <div class="word-translation" style="margin-top:10px;">${escapeHtml(s.de || "")}</div>
+      <div class="card card-word">
+        <img src="${target.img}" data-fallback="${escapeHtml(target.fallbackImg || "")}" alt="Bild" class="word-image">
+        <div class="word-translation" style="margin-top:10px;">Sprich das Wort (ohne dass es angezeigt wird).</div>
       </div>
 
       <div class="controls-audio">
@@ -848,152 +816,134 @@ function renderSentencePhase() {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <button id="btn-skip" class="btn secondary" disabled>Später noch einmal</button>
-        <div id="speak-feedback" class="feedback" style="flex-basis:100%;"></div>
+        <div id="testC-feedback" class="feedback" style="flex-basis:100%;"></div>
+      </div>
+
+      <div style="margin-top:10px; font-size:13px; opacity:.8;">
+        Fehlversuche aktuell: <strong>${testC_failStreak}</strong> / ${TESTC_FAILS_BEFORE_TELL}
       </div>
     </div>
   `;
 
+  attachImgFallbacks();
+
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
-  const btnSkip = document.getElementById("btn-skip");
 
-  styleSpeakButtons(btnSpeak, btnSkip);
+  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater: null });
 
-  const localRefresh = () => {
-    const rec = micRecording;
-    const tts = ttsActive;
-
-    btnHear.disabled = rec || tts;
-    btnHearSlow.disabled = rec || tts;
-
-    if (rec || tts) {
-      btnSpeak.disabled = true;
-      btnSkip.disabled = true;
-    } else {
-      styleSpeakButtons(btnSpeak, btnSkip);
-    }
-  };
-  setUiRefreshLocks(localRefresh);
-  localRefresh();
-
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(s.text, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(s.text, 0.7); };
-
-  btnSkip.onclick = async () => {
-    setSpeakFeedback("Wir kommen später zurück.", null);
-    await sleep(650);
-    advanceFromSentence();
-  };
+  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 1.0); };
+  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 0.7); };
 
   btnSpeak.onclick = async () => {
-    if (micRecording) return;
-    if (currentFailCount >= FAILS_FOR_SKIP) return;
+    if (micRecording || ttsActive) return;
 
-    const clearAutoStop = () => {
-      try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
-      autoStopTimer = null;
-    };
+    stopAllAudioStates();
 
-    const stopAndAssess = async () => {
-      if (!micRecording) return;
+    if (!speechRecAvailable()) {
+      setFeedback("testC-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
 
-      clearAutoStop();
-      setSpeakFeedback("Verarbeite…", null);
+    setFeedback("testC-feedback", "Sprich jetzt. Aufnahme stoppt automatisch.", null);
 
-      const recognizedText = await stopBrowserASR();
-      const res = scoreSpeech(s.text, recognizedText);
+    try { window.speechSynthesis.cancel(); } catch {}
+    ttsActive = false;
+    refreshLocks();
+    await sleep(120);
 
-      micRecording = false;
-      refreshLocks();
+    const started = startBrowserASR("fr-FR");
+    if (!started) {
+      setFeedback("testC-feedback", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
+      return;
+    }
 
-      if (!res.pass100) currentFailCount++;
+    micRecording = true;
+    refreshLocks();
 
-      if (res.pass100) {
-        setSpeakFeedback(
-          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Perfekt!`,
-          true
+    clearAutoStopTimer();
+    autoStopTimer = setTimeout(async () => {
+      try {
+        setFeedback("testC-feedback", "Verarbeite…", null);
+
+        const recognizedText = await stopBrowserASR();
+        const res = scoreSpeech(target.word, recognizedText);
+
+        micRecording = false;
+        refreshLocks();
+
+        if (res.pass) {
+          const c = (testC_correct.get(target.id) || 0) + 1;
+          testC_correct.set(target.id, Math.min(2, c));
+          testC_failStreak = 0;
+
+          setFeedback(
+            "testC-feedback",
+            `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Gezählt!`,
+            "ok"
+          );
+
+          clearAdvanceTimer();
+          advanceTimer = setTimeout(() => {
+            testTargetId = pickNextTargetId(testC_correct);
+            renderTestC();
+          }, AUTO_ADVANCE_MS);
+
+          return;
+        }
+
+        testC_failStreak++;
+        setFeedback(
+          "testC-feedback",
+          `Aussprache: ${res.overall}% (${res.grade}) · Erkannt: „${recognizedText || "(leer)"}“ · Nicht gezählt.`,
+          "bad"
         );
 
-        clearAdvanceTimer();
-        advanceTimer = setTimeout(() => {
-          advanceFromSentence();
-        }, AUTO_ADVANCE_MS);
+        if (testC_failStreak >= TESTC_FAILS_BEFORE_TELL) {
+          reviewSet.add(target.id);
+          testC_failStreak = 0;
 
-        return;
+          setFeedback("testC-feedback", "Lernhilfe: Hör nochmal zu. (Dieses Wort kommt später nochmal.)", "bad");
+          await sleep(350);
+          speakWord(target.word, 0.7);
+
+          clearAdvanceTimer();
+          advanceTimer = setTimeout(() => {
+            testTargetId = pickNextTargetId(testC_correct);
+            renderTestC();
+          }, 900);
+        }
+      } catch (e) {
+        console.error(e);
+        micRecording = false;
+        refreshLocks();
+        setFeedback("testC-feedback", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
       }
-
-      if (currentFailCount >= FAILS_FOR_SKIP) {
-        styleSpeakButtons(btnSpeak, btnSkip);
-      }
-
-      setSpeakFeedback(
-        `Aussprache: ${res.overall}% (${res.grade})` +
-        ` · Erkannt: „${recognizedText || "(leer)"}“` +
-        ` · Nochmal (${currentFailCount}/${FAILS_FOR_SKIP})`,
-        false
-      );
-    };
-
-    try {
-      stopAllAudioStates();
-
-      if (!speechRecAvailable()) {
-        setSpeakFeedback("Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", false);
-        return;
-      }
-
-      setSpeakFeedback("Sprich jetzt. Aufnahme stoppt automatisch.", null);
-
-      try { window.speechSynthesis.cancel(); } catch {}
-      ttsActive = false;
-      refreshLocks();
-      await sleep(150);
-
-      const started = startBrowserASR("fr-FR");
-      if (!started) {
-        setSpeakFeedback("Spracherkennung konnte nicht starten. Bitte Seite neu laden.", false);
-        return;
-      }
-
-      micRecording = true;
-      refreshLocks();
-
-      clearAutoStop();
-      autoStopTimer = setTimeout(() => {
-        stopAndAssess().catch((e) => {
-          console.error(e);
-          micRecording = false;
-          refreshLocks();
-          setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
-        });
-      }, 4500);
-
-    } catch (e) {
-      console.error(e);
-      try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
-      autoStopTimer = null;
-      micRecording = false;
-      stopAllAudioStates();
-      refreshLocks();
-      setSpeakFeedback("Fehler beim Prüfen. Bitte nochmal versuchen.", false);
-    }
+    }, 3800);
   };
 }
 
-// ----------------- END -----------------
+// ----------------- END SCREEN -----------------
 function renderEndScreen() {
   clearAdvanceTimer();
   stopAllAudioStates();
+
+  const reviewLeft = Array.from(reviewSet).length;
+
   appEl.innerHTML = `
     <div class="screen screen-end">
-      <h1>Tag 1 geschafft</h1>
-      <p>Du hast alle Übungen abgeschlossen (Wörter, Quiz, Sätze).</p>
-      <button id="btn-repeat" class="btn primary">Tag 1 wiederholen</button>
+      <h1>Fertig</h1>
+      <p>Du hast die 12 Wörter durchgearbeitet und die Tests abgeschlossen.</p>
+      <p>${reviewLeft ? `Offene Wiederholungen: <strong>${reviewLeft}</strong>` : "Keine offenen Wiederholungen mehr."}</p>
+
+      <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-top:14px;">
+        <button id="btn-repeat" class="btn primary">Nochmal starten</button>
+      </div>
     </div>
   `;
-  document.getElementById("btn-repeat").onclick = () => startLesson();
+
+  document.getElementById("btn-repeat").onclick = () => startProgram();
 }
 
 // ----------------- TTS -----------------
@@ -1054,8 +1004,7 @@ function speakWord(text, rate = 1.0) {
 
 // ----------------- CLEANUP -----------------
 function stopAllAudioStates() {
-  try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
-  autoStopTimer = null;
+  clearAutoStopTimer();
 
   if (_sr) {
     try { _sr.stop(); } catch {}
@@ -1070,46 +1019,6 @@ function stopAllAudioStates() {
   refreshLocks();
 }
 
-// ----------------- UI HELPERS -----------------
-function setSpeakFeedback(text, pass) {
-  const el = document.getElementById("speak-feedback");
-  if (!el) return;
 
-  el.textContent = text || "";
-
-  if (pass === true) {
-    el.style.color = "#16a34a";
-    el.style.fontWeight = "900";
-  } else if (pass === false) {
-    el.style.color = "#dc2626";
-    el.style.fontWeight = "900";
-  } else {
-    el.style.color = "";
-    el.style.fontWeight = "";
-  }
-}
-
-function escapeHtml(str) {
-  return String(str || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-// ----------------- ARRAY HELPERS -----------------
-function shuffleArray(arr) {
-  const a = [...arr];
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-function takeN(arr, n) {
-  return arr.slice(0, Math.max(0, n));
-}
 
 
