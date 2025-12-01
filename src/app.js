@@ -1,36 +1,41 @@
-// src/app.js – Vor-A1 / Klassensprache FRANZÖSISCH
-//
-// Flow pro 4er-Pack:
-// 1) Lernen + Aussprache (Hören/Langsam/Ich spreche/Später)
-//    - ab 80% -> nächstes Wort
-//    - nach 4x falsch -> Wort in Review-Container, dann weiter
-// 2) Test A (Wort sichtbar): Wort + (Hören/Langsam) -> richtiges Bild klicken
-//    - bis jedes der 4 Bilder 2× korrekt geklickt wurde (Fehler zählen nicht)
-// 3) Test B (nur Hören): Wort wird gesprochen (ohne Text) -> Bild klicken
-//    - bis jedes Bild 2× korrekt angeklickt wurde (Fehler zählen nicht)
-// 4) Test C (Produktion): Bild -> Nutzer spricht Wort
-//    - bis jedes Bild 2× korrekt gesprochen wurde
-//    - unkorrekte Versuche zählen nicht
-//    - nach 3 Fehlversuchen: System sagt Wort (Lernhilfe) und Wort kommt in Review
-//
-// Danach: nächstes 4er-Pack. Am Ende: Review-Container wiederholen.
-// Danach: Satzphase (mit Bild + Satztext) + Satz-Review.
+// src/app.js – Vor-A1 Training (Pack-Modus: 4 Wörter) + Container + 3 Tests
+// - PASS ab 80%
+// - Nach 4 Fehlversuchen: Wort in Container (Review) und weiter
+// - Nach je 4 Wörtern: 3 Tests (A: Wort+Bild, B: nur hören, C: Bild->sprechen)
+// - Fix: "(leer)" wird NICHT als Fehlversuch gezählt
+// - Fix: bei Ein-Wort-Targets wird bestes Token gewertet (z.B. "je je" => "je" => 100%)
 
 const LESSON_ID = "W1D1";
-const TITLE = "Vor-A1 – Klassensprache Französisch";
-
-const ASR_LANG = "fr-FR";          // <- WICHTIG: Französisch
-const TTS_LANG_PREFIX = "fr";       // <- WICHTIG: Französisch
+const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // "/assets/images/W1D1/"
 
 const PACK_SIZE = 4;
+const PASS_THRESHOLD = 80;
+const FAILS_TO_CONTAINER = 4;   // nach 4 Fehlversuchen ins Review
+const TEST_NEED_EACH = 2;       // je Wort/Bild 2x korrekt für Test A/B/C
+const TESTC_MAX_FAILS_BEFORE_HINT = 3;
 
-const PASS_THRESHOLD = 80;          // ab 80% weiter
-const FAILS_TO_REVIEW = 4;          // nach 4x falsch im Learn -> Review-Container
-const TESTC_FAILS_BEFORE_TELL = 3;  // nach 3 Fehlversuchen im Test C sagt System das Wort
-const AUTO_ADVANCE_MS = 650;
+const ASR_LANG = "fr-FR";       // Sprache für SpeechRecognition
+const TTS_LANG_PREFIX = "fr";   // Voice-Auswahl
 
-const IMAGE_DIR_ABS = `/assets/images/${LESSON_ID}/`;  // bevorzugt
-const IMAGE_DIR_REL = `assets/images/${LESSON_ID}/`;   // Fallback (falls dein Setup ohne führendes / arbeitet)
+// ---------- Inhalt (später leicht austauschbar) ----------
+// word = das gesprochene/zu trainierende Wort (französisch)
+// de   = Anzeige/Übersetzung (optional)
+const ITEMS = [
+  { id: "w01_ich",       word: "je",       de: "ich",        img: "w01_ich.png" },
+  { id: "w02_du",        word: "tu",       de: "du",         img: "w02_du.png" },
+  { id: "w03_wir",       word: "nous",     de: "wir",        img: "w03_wir.png" },
+  { id: "w04_sie",       word: "vous",     de: "Sie / ihr",  img: "w04_sie.png" },
+
+  { id: "w05_buch",      word: "livre",    de: "Buch",       img: "w05_buch.png" },
+  { id: "w06_tuer",      word: "porte",    de: "Tür",        img: "w06_tuer.png" },
+  { id: "w07_oeffnen",   word: "ouvrir",   de: "öffnen",     img: "w07_oeffnen.png" },
+  { id: "w08_schliessen",word: "fermer",   de: "schließen",  img: "w08_schliessen.png" },
+
+  { id: "w09_hoeren",    word: "écouter",  de: "hören",      img: "w09_hoeren.png" },
+  { id: "w10_sprechen",  word: "parler",   de: "sprechen",   img: "w10_sprechen.png" },
+  { id: "w11_lesen",     word: "lire",     de: "lesen",      img: "w11_lesen.png" },
+  { id: "w12_schreiben", word: "écrire",   de: "schreiben",  img: "w12_schreiben.png" }
+];
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -39,132 +44,45 @@ const status = (msg) => {
   console.log("[STATUS]", msg);
 };
 
-// ----------------- FESTE 12 ITEMS (Bilder bleiben w01..w12) -----------------
-// Du kannst später nur diese 12 Wörter/Reihenfolge ändern.
-const FIXED_ITEMS = [
-  // Dateiname bleibt, Wort ist FR
-  { id: "w01_ich",       word: "je",       img: IMAGE_DIR_ABS + "w01_ich.png",       fallbackImg: IMAGE_DIR_REL + "w01_ich.png" },
-  { id: "w02_sie",       word: "vous",     img: IMAGE_DIR_ABS + "w02_sie.png",       fallbackImg: IMAGE_DIR_REL + "w02_sie.png" },
-  { id: "w03_buch",      word: "le livre", img: IMAGE_DIR_ABS + "w03_buch.png",      fallbackImg: IMAGE_DIR_REL + "w03_buch.png" },
-  { id: "w04_heft",      word: "le cahier",img: IMAGE_DIR_ABS + "w04_heft.png",      fallbackImg: IMAGE_DIR_REL + "w04_heft.png" },
-  { id: "w05_stift",     word: "le stylo", img: IMAGE_DIR_ABS + "w05_stift.png",     fallbackImg: IMAGE_DIR_REL + "w05_stift.png" },
-  { id: "w06_tisch",     word: "la table", img: IMAGE_DIR_ABS + "w06_tisch.png",     fallbackImg: IMAGE_DIR_REL + "w06_tisch.png" },
-  { id: "w07_stuhl",     word: "la chaise",img: IMAGE_DIR_ABS + "w07_stuhl.png",     fallbackImg: IMAGE_DIR_REL + "w07_stuhl.png" },
-  { id: "w08_tuer",      word: "la porte", img: IMAGE_DIR_ABS + "w08_tuer.png",      fallbackImg: IMAGE_DIR_REL + "w08_tuer.png" },
-  { id: "w09_hoeren",    word: "écouter",  img: IMAGE_DIR_ABS + "w09_hoeren.png",    fallbackImg: IMAGE_DIR_REL + "w09_hoeren.png" },
-  { id: "w10_sprechen",  word: "parler",   img: IMAGE_DIR_ABS + "w10_sprechen.png",  fallbackImg: IMAGE_DIR_REL + "w10_sprechen.png" },
-  { id: "w11_oeffnen",   word: "ouvrir",   img: IMAGE_DIR_ABS + "w11_oeffnen.png",   fallbackImg: IMAGE_DIR_REL + "w11_oeffnen.png" },
-  { id: "w12_schreiben", word: "écrire",   img: IMAGE_DIR_ABS + "w12_schreiben.png", fallbackImg: IMAGE_DIR_REL + "w12_schreiben.png" }
-];
+// ---------- globale Lern-States ----------
+const stats = Object.fromEntries(ITEMS.map(it => [it.id, {
+  failsLearn: 0,
+  inContainer: false,
+  learned: false
+}]));
 
-const ITEM_BY_ID = new Map(FIXED_ITEMS.map(x => [x.id, x]));
+let packIndex = 0;              // 0..2 bei 12 Wörtern
+let mode = "learn";             // learn | testA | testB | testC | review | sentences | end
+let currentItemIdxInPack = 0;
 
-// ----------------- Satzliste (Satz + passendes Bild) -----------------
-const SENTENCES = [
-  { id: "s01", text: "J'écoute.",               imgId: "w09_hoeren" },
-  { id: "s02", text: "Je parle.",               imgId: "w10_sprechen" },
-  { id: "s03", text: "J'écris.",                imgId: "w12_schreiben" },
-  { id: "s04", text: "J'ouvre la porte.",       imgId: "w08_tuer" },
-  { id: "s05", text: "J'ouvre le livre.",       imgId: "w03_buch" },
-  { id: "s06", text: "J'ouvre le cahier.",      imgId: "w04_heft" },
-  { id: "s07", text: "J'écris dans le cahier.", imgId: "w04_heft" },
-  { id: "s08", text: "J'écris dans le cahier.", imgId: "w04_heft" },
-  { id: "s09", text: "J'écris avec le stylo.",  imgId: "w05_stift" },
-  { id: "s10", text: "Le livre est là.",        imgId: "w03_buch" },
-  { id: "s11", text: "Le cahier est là.",       imgId: "w04_heft" },
-  { id: "s12", text: "Le stylo est là.",        imgId: "w05_stift" },
-  { id: "s13", text: "La table est là.",        imgId: "w06_tisch" },
-  { id: "s14", text: "La chaise est là.",       imgId: "w07_stuhl" },
-  { id: "s15", text: "La porte est là.",        imgId: "w08_tuer" },
-  { id: "s16", text: "Vous écoutez.",           imgId: "w09_hoeren" },
-  { id: "s17", text: "Vous parlez.",            imgId: "w10_sprechen" },
-  { id: "s18", text: "Vous écrivez.",           imgId: "w12_schreiben" },
-  { id: "s19", text: "Ouvrez la porte.",        imgId: "w08_tuer" },
-  { id: "s20", text: "Ouvrez le livre.",        imgId: "w03_buch" }
-];
-
-// ----------------- GLOBAL STATE -----------------
-let orderedItems = [...FIXED_ITEMS];
-let mainIndex = 0;
-
-// modes: "learn" | "testA" | "testB" | "testC" | "review" | "sentences" | "end"
-let mode = "learn";
-
-let currentPack = [];
-let learnIndex = 0;
-let learnFailCount = 0;
-
-// Review-Container Wörter
-let reviewSet = new Set();
-let reviewCursor = 0;
-
-// Tests – mastery
-let testA_correct = new Map();
-let testB_correct = new Map();
-let testC_correct = new Map();
-
+let container = [];             // IDs im aktuellen Pack
+let testCounts = {};            // id -> correctCount (für Tests A/B/C)
 let testTargetId = null;
-let testC_failStreak = 0;
+let testC_failStreakById = {};  // id -> fails in a row (Test C)
 
-// Satzphase state
-let sentenceMode = "main"; // "main" | "review"
-let sentenceIndex = 0;
-let sentenceFailCount = 0;
-let sentenceReviewSet = new Set();
-let sentenceReviewQueue = [];
-
-// timers / audio
-let autoStopTimer = null;
-let advanceTimer = null;
-
+// TTS
 let ttsSupported = "speechSynthesis" in window;
-let ttsVoices = [];
 let ttsVoice = null;
 let ttsActive = false;
 
+// ASR
 let micRecording = false;
-let _sr = null;
-let _srFinal = "";
-let _srInterim = "";
-let _srResolve = null;
+let autoStopTimer = null;
+let advanceTimer = null;
 
 // UI lock refresh callback
 let _uiRefreshLocks = null;
 function setUiRefreshLocks(fn) { _uiRefreshLocks = fn; }
 function refreshLocks() { try { _uiRefreshLocks && _uiRefreshLocks(); } catch {} }
 
-function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
-
-function clearAdvanceTimer() {
+// ---------- Util ----------
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function clearTimers() {
+  try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
   try { if (advanceTimer) clearTimeout(advanceTimer); } catch {}
+  autoStopTimer = null;
   advanceTimer = null;
 }
-function clearAutoStopTimer() {
-  try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
-  autoStopTimer = null;
-}
-
-// ----------------- Helpers -----------------
-function escapeHtml(str) {
-  return String(str || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function attachImgFallbacks() {
-  if (!appEl) return;
-  appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
-    const fb = img.getAttribute("data-fallback") || "";
-    img.onerror = () => {
-      img.onerror = null;
-      if (fb) img.src = fb;
-    };
-  });
-}
-
 function shuffleArray(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -173,61 +91,86 @@ function shuffleArray(arr) {
   }
   return a;
 }
+function escapeHtml(str) {
+  return String(str || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+function imgSrc(it) { return IMAGE_DIR + it.img; }
 
-function pickNextTargetId(masterMap) {
-  const need = currentPack
-    .filter(it => (masterMap.get(it.id) || 0) < 2)
-    .map(it => it.id);
-  if (!need.length) return null;
-  return need[Math.floor(Math.random() * need.length)];
+function getPackItems() {
+  const start = packIndex * PACK_SIZE;
+  return ITEMS.slice(start, start + PACK_SIZE);
+}
+function packLabel() {
+  return `Pack ${packIndex + 1} von ${Math.ceil(ITEMS.length / PACK_SIZE)}`;
+}
+function packProgressLabel() {
+  const packItems = getPackItems();
+  const learnedCount = packItems.filter(it => stats[it.id]?.learned).length;
+  return `Gelernt: ${learnedCount}/${packItems.length}`;
 }
 
-function allMastered(masterMap) {
-  for (const it of currentPack) {
-    if ((masterMap.get(it.id) || 0) < 2) return false;
+// ---------- TTS ----------
+initTTS();
+
+function initTTS() {
+  if (!ttsSupported) {
+    status("Sprachausgabe wird von diesem Browser nicht unterstützt.");
+    return;
   }
-  return true;
-}
 
-function packProgressText(masterMap) {
-  let sum = 0;
-  let max = currentPack.length * 2;
-  for (const it of currentPack) sum += Math.min(2, (masterMap.get(it.id) || 0));
-  return `${sum}/${max}`;
-}
+  const pickVoice = () => {
+    const voices = window.speechSynthesis.getVoices() || [];
+    if (!voices.length) return;
 
-function setFeedback(elId, text, kind) {
-  const el = document.getElementById(elId);
-  if (!el) return;
-  el.textContent = text || "";
-  if (kind === "ok") {
-    el.style.color = "#16a34a";
-    el.style.fontWeight = "900";
-  } else if (kind === "bad") {
-    el.style.color = "#dc2626";
-    el.style.fontWeight = "900";
-  } else {
-    el.style.color = "";
-    el.style.fontWeight = "";
-  }
-}
+    ttsVoice =
+      voices.find(v => (v.lang || "").toLowerCase().startsWith(TTS_LANG_PREFIX)) ||
+      voices[0];
 
-// ----------------- Locks -----------------
-function setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater }) {
-  const localRefresh = () => {
-    const rec = micRecording;
-    const tts = ttsActive;
-
-    if (btnHear) btnHear.disabled = rec || tts;
-    if (btnHearSlow) btnHearSlow.disabled = rec || tts;
-    if (btnSpeak) btnSpeak.disabled = rec || tts;
-    if (btnLater) btnLater.disabled = rec || tts;
+    status(ttsVoice ? `Sprachausgabe bereit: ${ttsVoice.name} (${ttsVoice.lang})` : "Sprachausgabe bereit.");
   };
-  setUiRefreshLocks(localRefresh);
-  localRefresh();
+
+  pickVoice();
+  window.speechSynthesis.onvoiceschanged = pickVoice;
 }
 
-// ----------------- ASR -----------------
+function speakWord(text, rate = 1.0) {
+  if (!ttsSupported || !text) return;
+  if (micRecording) return;
+  try {
+    window.speechSynthesis.cancel();
+
+    const u = new SpeechSynthesisUtterance(text);
+    if (ttsVoice) {
+      u.voice = ttsVoice;
+      u.lang = ttsVoice.lang;
+    } else {
+      u.lang = ASR_LANG;
+    }
+    u.rate = rate;
+
+    u.onstart = () => { ttsActive = true; refreshLocks(); };
+    u.onend = () => { ttsActive = false; refreshLocks(); };
+    u.onerror = () => { ttsActive = false; refreshLocks(); };
+
+    window.speechSynthesis.speak(u);
+  } catch (e) {
+    console.error("TTS error", e);
+    ttsActive = false;
+    refreshLocks();
+  }
+}
+
+// ---------- ASR (Browser SpeechRecognition) ----------
+let _sr = null;
+let _srFinal = "";
+let _srInterim = "";
+let _srResolve = null;
+
 function speechRecAvailable() {
   return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
@@ -242,7 +185,7 @@ function startBrowserASR(lang = ASR_LANG) {
   _sr = new SR();
   _sr.lang = lang;
   _sr.interimResults = true;
-  _sr.continuous = true;
+  _sr.continuous = false;      // wichtiger Fix: weniger "je je" & stabiler für Single-Words
   _sr.maxAlternatives = 1;
 
   _sr.onresult = (e) => {
@@ -255,7 +198,6 @@ function startBrowserASR(lang = ASR_LANG) {
       if (r.isFinal) addFinal += " " + t;
       else interimAll += " " + t;
     }
-
     if (interimAll.trim()) _srInterim = interimAll.trim();
     if (addFinal.trim()) _srFinal = (_srFinal + " " + addFinal).trim();
   };
@@ -287,24 +229,43 @@ function startBrowserASR(lang = ASR_LANG) {
 
 function stopBrowserASR() {
   return new Promise((resolve) => {
-    if (!_sr) return resolve((_srFinal || _srInterim || "").trim());
+    const safeResolve = () => resolve((_srFinal || _srInterim || "").trim());
+
+    if (!_sr) return safeResolve();
     _srResolve = resolve;
-    try { _sr.stop(); } catch { resolve((_srFinal || _srInterim || "").trim()); }
+
+    // Sicherheitsnetz: wenn onend nicht kommt, trotzdem nach kurzer Zeit liefern
+    const fallback = setTimeout(() => {
+      if (_srResolve) {
+        const out = (_srFinal || _srInterim || "").trim();
+        _srResolve(out);
+        _srResolve = null;
+        try { _sr?.abort?.(); } catch {}
+        _sr = null;
+      }
+    }, 900);
+
+    const prevResolve = _srResolve;
+    _srResolve = (txt) => {
+      try { clearTimeout(fallback); } catch {}
+      resolve((txt || "").trim());
+    };
+
+    try { _sr.stop(); } catch { safeResolve(); }
   });
 }
 
-// ----------------- Scoring (FR) -----------------
+// ---------- Scoring (robust gegen "je je") ----------
 const ARTICLES = new Set(["le","la","les","un","une","des","du","de","d","l"]);
-
-const FR_VERB_LEMMA = {
-  // écouter
-  ecoute: "ecouter", ecoutes: "ecouter", ecoutez: "ecouter", ecouter: "ecouter",
-  // parler
-  parle: "parler", parles: "parler", parlez: "parler", parler: "parler",
-  // écrire
-  ecris: "ecrire", ecrit: "ecrire", ecrivez: "ecrire", ecrire: "ecrire",
-  // ouvrir
-  ouvre: "ouvrir", ouvres: "ouvrir", ouvrez: "ouvrir", ouvrir: "ouvrir"
+const FR_LEMMA = {
+  ecoute: "écouter", ecouter: "écouter", écouter: "écouter",
+  repete: "répéter", repeter: "répéter", répéter: "répéter",
+  lis: "lire", lire: "lire",
+  ecris: "écrire", ecrire: "écrire", écrire: "écrire",
+  ouvre: "ouvrir", ouvrir: "ouvrir",
+  ferme: "fermer", fermer: "fermer",
+  parle: "parler", parler: "parler",
+  j: "je", je: "je"
 };
 
 function _norm(s) {
@@ -318,30 +279,8 @@ function _norm(s) {
     .trim();
 }
 
-function canonicalForScoring(s) {
-  let x = _norm(s);
-  if (!x) return "";
-
-  // j' -> je
-  x = (` ${x} `).replace(/\bj\b/g, "je").replace(/\s+/g, " ").trim();
-
-  const toks = x.split(" ").filter(Boolean);
-
-  // Artikel raus
-  const toks2 = toks.filter(t => !ARTICLES.has(t));
-  if (!toks2.length) return "";
-
-  // Verb position: entweder 1. Token (Imperativ) oder 2. Token (je/vous + Verb)
-  const subj = toks2[0];
-  const hasSubj = ["je","tu","vous","nous","il","elle","on","ils","elles"].includes(subj);
-
-  if (hasSubj && toks2.length >= 2) {
-    toks2[1] = FR_VERB_LEMMA[toks2[1]] || toks2[1];
-  } else {
-    toks2[0] = FR_VERB_LEMMA[toks2[0]] || toks2[0];
-  }
-
-  return toks2.join(" ").trim();
+function _tokensNoArticles(s) {
+  return _norm(s).split(" ").filter(Boolean).filter(t => !ARTICLES.has(t));
 }
 
 function _levenshtein(a, b) {
@@ -349,11 +288,9 @@ function _levenshtein(a, b) {
   const m = a.length, n = b.length;
   if (!m) return n;
   if (!n) return m;
-
   const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
   for (let i = 0; i <= m; i++) dp[i][0] = i;
   for (let j = 0; j <= n; j++) dp[0][j] = j;
-
   for (let i = 1; i <= m; i++) {
     for (let j = 1; j <= n; j++) {
       const cost = a[i - 1] === b[j - 1] ? 0 : 1;
@@ -375,181 +312,154 @@ function _charSimilarity(target, heard) {
   return Math.max(0, Math.min(1, 1 - dist / maxLen));
 }
 
-function _tokenSimilarity(target, heard) {
-  const A = _norm(target).split(" ").filter(Boolean);
-  const B = _norm(heard).split(" ").filter(Boolean);
-  if (!A.length || !B.length) return 0;
+function canonicalFrench(s) {
+  const toks = _tokensNoArticles(s);
+  if (!toks.length) return "";
+  const out = [...toks];
 
-  const setB = new Set(B);
-  let common = 0;
-  for (const t of A) if (setB.has(t)) common++;
+  // Lemma nur für erstes Token (verb/pronomen)
+  out[0] = FR_LEMMA[out[0]] || out[0];
 
-  const denom = Math.max(A.length, B.length) || 1;
-  return common / denom;
+  // Doppelte direkt hintereinander entfernen: "je je" -> "je"
+  const dedup = [];
+  for (const t of out) {
+    if (dedup.length && dedup[dedup.length - 1] === t) continue;
+    dedup.push(t);
+  }
+  return dedup.join(" ").trim();
 }
 
-function scoreSpeech(target, heard) {
-  const tCan = canonicalForScoring(target);
-  const hCan = canonicalForScoring(heard);
+// Wenn Target ein einzelnes Wort ist, werten wir das beste Token aus "heard".
+// Fix für "je je" und für ASR, das manchmal zwei Wörter liefert.
+function bestTokenForSingleWord(target, heard) {
+  const t = canonicalFrench(target);
+  const tokens = canonicalFrench(heard).split(" ").filter(Boolean);
+  if (!t || !tokens.length) return "";
 
-  if (tCan && hCan && tCan === hCan) {
-    return { overall: 100, grade: "excellent", pass: true };
+  let best = { tok: tokens[0], sim: -1 };
+  for (const tok of tokens) {
+    const sim = _charSimilarity(t, tok);
+    if (sim > best.sim) best = { tok, sim };
+  }
+  return best.tok;
+}
+
+function scoreSpeech(target, heardRaw) {
+  const targetCan = canonicalFrench(target);
+  const heardCan = canonicalFrench(heardRaw);
+
+  if (!targetCan || !heardCan) {
+    return { overall: 0, pass: false, usedHeard: heardCan, usedTarget: targetCan };
   }
 
-  const cs = _charSimilarity(tCan || target, hCan || heard);
-  const ts = _tokenSimilarity(tCan || target, hCan || heard);
-  const sim = (0.7 * cs) + (0.3 * ts);
-  const overall = Math.max(0, Math.min(100, Math.round(sim * 100)));
+  // Single word target: bestes Token aus heard
+  const isSingle = !targetCan.includes(" ");
+  const usedHeard = isSingle ? bestTokenForSingleWord(targetCan, heardCan) : heardCan;
+
+  const cs = _charSimilarity(targetCan, usedHeard);
+  const overall = Math.max(0, Math.min(100, Math.round(cs * 100)));
 
   return {
     overall,
-    grade: overall >= 90 ? "excellent" : overall >= 80 ? "good" : overall >= 65 ? "ok" : "try_again",
-    pass: overall >= PASS_THRESHOLD
+    pass: overall >= PASS_THRESHOLD,
+    usedHeard,
+    usedTarget: targetCan
   };
 }
 
-// ----------------- INIT -----------------
-initTTS();
-startProgram();
+// ---------- Audio cleanup ----------
+function stopAllAudioStates() {
+  clearTimers();
 
-// ----------------- PROGRAM FLOW -----------------
-function startProgram() {
-  clearAdvanceTimer();
-  stopAllAudioStates();
+  if (_sr) {
+    try { _sr.stop(); } catch {}
+    _sr = null;
+  }
+  micRecording = false;
 
-  orderedItems = [...FIXED_ITEMS];
-  mainIndex = 0;
+  try { window.speechSynthesis?.cancel?.(); } catch {}
+  ttsActive = false;
+
+  refreshLocks();
+}
+
+// ---------- Feedback helpers ----------
+function setFeedback(id, text, kind) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text || "";
+  if (kind === "ok") {
+    el.style.color = "#16a34a";
+    el.style.fontWeight = "900";
+  } else if (kind === "bad") {
+    el.style.color = "#dc2626";
+    el.style.fontWeight = "900";
+  } else {
+    el.style.color = "";
+    el.style.fontWeight = "";
+  }
+}
+
+// ---------- Flow ----------
+start();
+
+function start() {
+  packIndex = 0;
   mode = "learn";
-
-  reviewSet = new Set();
-  reviewCursor = 0;
-
-  loadNextPackFromMain();
+  currentItemIdxInPack = 0;
+  container = [];
+  testCounts = {};
+  testTargetId = null;
+  testC_failStreakById = {};
   render();
 }
 
-function loadNextPackFromMain() {
-  currentPack = orderedItems.slice(mainIndex, mainIndex + PACK_SIZE);
-  learnIndex = 0;
-  learnFailCount = 0;
-  resetPackTests();
-
-  if (!currentPack.length) {
-    return startReviewMode();
-  }
-}
-
-function startReviewMode() {
-  mode = "review";
-  const ids = Array.from(reviewSet);
-
-  if (!ids.length) {
-    return startSentenceMode();
-  }
-
-  if (reviewCursor >= ids.length) reviewCursor = 0;
-
-  currentPack = ids
-    .slice(reviewCursor, reviewCursor + PACK_SIZE)
-    .map(id => orderedItems.find(x => x.id === id))
-    .filter(Boolean);
-
-  reviewCursor += PACK_SIZE;
-
-  learnIndex = 0;
-  learnFailCount = 0;
-  resetPackTests();
-
-  if (!currentPack.length) {
-    return startSentenceMode();
-  }
-}
-
-function completeCurrentPack() {
-  stopAllAudioStates();
-  clearAdvanceTimer();
-
-  if (mode === "review") {
-    for (const it of currentPack) {
-      const c = testC_correct.get(it.id) || 0;
-      if (c >= 2) reviewSet.delete(it.id);
-    }
-    startReviewMode();
+function nextPackOrSentences() {
+  if (packIndex < Math.ceil(ITEMS.length / PACK_SIZE) - 1) {
+    packIndex++;
+    mode = "learn";
+    currentItemIdxInPack = 0;
+    container = [];
+    testCounts = {};
+    testTargetId = null;
+    testC_failStreakById = {};
     return render();
   }
-
-  mainIndex += PACK_SIZE;
-  loadNextPackFromMain();
-  return render();
-}
-
-function resetPackTests() {
-  testA_correct = new Map();
-  testB_correct = new Map();
-  testC_correct = new Map();
-  testTargetId = null;
-  testC_failStreak = 0;
-
-  for (const it of currentPack) {
-    testA_correct.set(it.id, 0);
-    testB_correct.set(it.id, 0);
-    testC_correct.set(it.id, 0);
-  }
-}
-
-function startSentenceMode() {
   mode = "sentences";
-  sentenceMode = "main";
-  sentenceIndex = 0;
-  sentenceFailCount = 0;
-  sentenceReviewSet = new Set();
-  sentenceReviewQueue = [];
   render();
 }
 
-// ----------------- RENDER ROUTER -----------------
 function render() {
-  if (!appEl) return;
+  stopAllAudioStates();
 
-  if (mode === "end") return renderEndScreen();
-  if (mode === "learn" || mode === "review") return renderLearnWord();
+  if (mode === "learn") return renderLearn();
   if (mode === "testA") return renderTestA();
   if (mode === "testB") return renderTestB();
   if (mode === "testC") return renderTestC();
-  if (mode === "sentences") return renderSentence();
+  if (mode === "review") return renderReview();
+  if (mode === "sentences") return renderSentences();
+  return renderEnd();
 }
 
-// ----------------- LEARN (WORT) -----------------
-function renderLearnWord() {
-  clearAdvanceTimer();
-  stopAllAudioStates();
-
-  const it = currentPack[learnIndex];
-  if (!it) {
-    mode = "testA";
-    testTargetId = null;
-    return render();
-  }
-
-  const isReview = (mode === "review");
-  const total = orderedItems.length || 12;
-  const globalPos = Math.min(total, isReview ? total : (mainIndex + learnIndex + 1));
-  const packNo = isReview ? "Wiederholung" : `Pack ${Math.floor(mainIndex / PACK_SIZE) + 1} von ${Math.ceil(total / PACK_SIZE)}`;
+// ---------- LEARN (Wort -> sprechen) ----------
+function renderLearn() {
+  const pack = getPackItems();
+  const it = pack[currentItemIdxInPack];
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
-        <div class="badge">${escapeHtml(TITLE)}</div>
-        <div class="badge">${escapeHtml(packNo)}</div>
-        <div class="badge">Wort ${learnIndex + 1} von ${currentPack.length}${isReview ? " (Review)" : ""}</div>
-        <div class="badge">Gesamt ${globalPos} von ${total}</div>
+        <div class="badge">${escapeHtml(packLabel())}</div>
+        <div class="badge">${escapeHtml(packProgressLabel())}</div>
+        <div class="badge">Wort ${currentItemIdxInPack + 1} von ${pack.length}</div>
       </div>
 
-      <h1>${isReview ? "Wiederholung" : "Lernen"}</h1>
+      <h1>Worttraining</h1>
 
       <div class="card card-word">
-        <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="${escapeHtml(it.word)}" class="word-image">
+        <img src="${imgSrc(it)}" alt="" class="word-image">
         <div class="word-text">${escapeHtml(it.word)}</div>
+        <div class="word-translation">${escapeHtml(it.de || "")}</div>
       </div>
 
       <div class="controls-audio">
@@ -562,43 +472,42 @@ function renderLearnWord() {
         <button id="btn-later" class="btn secondary">Später noch einmal</button>
         <div id="learn-feedback" class="feedback" style="flex-basis:100%;"></div>
       </div>
-
-      <div style="margin-top:10px; font-size:13px; opacity:.8;">
-        Fehlversuche: <strong>${learnFailCount}</strong> / ${FAILS_TO_REVIEW}
-      </div>
     </div>
   `;
-
-  attachImgFallbacks();
 
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
   const btnLater = document.getElementById("btn-later");
 
-  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater });
+  const refresh = () => {
+    const lock = micRecording || ttsActive;
+    btnHear.disabled = lock;
+    btnHearSlow.disabled = lock;
+    btnSpeak.disabled = lock;
+    btnLater.disabled = lock;
+  };
+  setUiRefreshLocks(refresh);
+  refresh();
 
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(it.word, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(it.word, 0.7); };
+  btnHear.onclick = () => speakWord(it.word, 1.0);
+  btnHearSlow.onclick = () => speakWord(it.word, 0.7);
 
   btnLater.onclick = async () => {
-    if (micRecording || ttsActive) return;
-    reviewSet.add(it.id);
-    setFeedback("learn-feedback", "Okay – dieses Wort kommt später nochmal (Review).", "ok");
+    putIntoContainer(it.id);
+    setFeedback("learn-feedback", "Okay – kommt später nochmal.", "bad");
     await sleep(450);
-    goNextLearnWord();
+    advanceLearn();
   };
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
-    stopAllAudioStates();
-
     if (!speechRecAvailable()) {
       setFeedback("learn-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
       return;
     }
 
-    setFeedback("learn-feedback", "Sprich jetzt. Aufnahme stoppt automatisch.", null);
+    setFeedback("learn-feedback", "Sprich jetzt…", null);
 
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
@@ -614,284 +523,346 @@ function renderLearnWord() {
     micRecording = true;
     refreshLocks();
 
-    clearAutoStopTimer();
+    clearTimers();
     autoStopTimer = setTimeout(async () => {
       try {
-        setFeedback("learn-feedback", "Verarbeite…", null);
-
-        const recognizedText = await stopBrowserASR();
-        const res = scoreSpeech(it.word, recognizedText);
-
+        const heardRaw = (await stopBrowserASR()).trim();
         micRecording = false;
         refreshLocks();
 
-        if (res.pass) {
-          setFeedback("learn-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Weiter!`, "ok");
-          clearAdvanceTimer();
-          advanceTimer = setTimeout(() => goNextLearnWord(), AUTO_ADVANCE_MS);
+        // IMPORTANT FIX: "(leer)" NICHT als Fehlversuch zählen
+        if (!heardRaw) {
+          setFeedback("learn-feedback", "Ich habe nichts verstanden (leer). Bitte näher ans Mikro und deutlich sprechen.", "bad");
           return;
         }
 
-        learnFailCount++;
-        setFeedback("learn-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Nochmal.`, "bad");
+        const res = scoreSpeech(it.word, heardRaw);
+        const used = res.usedHeard || heardRaw;
 
-        if (learnFailCount >= FAILS_TO_REVIEW) {
-          reviewSet.add(it.id);
-          setFeedback("learn-feedback", "Noch nicht sicher. Dieses Wort kommt später nochmal (Review).", "bad");
-          clearAdvanceTimer();
-          advanceTimer = setTimeout(() => goNextLearnWord(true), 900);
+        if (res.pass) {
+          stats[it.id].learned = true;
+          setFeedback("learn-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ → gewertet: „${used}“ · Weiter!`, "ok");
+          clearTimers();
+          advanceTimer = setTimeout(() => advanceLearn(), 900);
+          return;
         }
+
+        // fail (gezählt)
+        stats[it.id].failsLearn++;
+
+        if (stats[it.id].failsLearn >= FAILS_TO_CONTAINER) {
+          putIntoContainer(it.id);
+          setFeedback("learn-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ → „${used}“ · In den Container (kommt später).`, "bad");
+          clearTimers();
+          advanceTimer = setTimeout(() => advanceLearn(), 900);
+          return;
+        }
+
+        setFeedback(
+          "learn-feedback",
+          `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ → „${used}“ · Nochmal (${stats[it.id].failsLearn}/${FAILS_TO_CONTAINER})`,
+          "bad"
+        );
       } catch (e) {
         console.error(e);
         micRecording = false;
         refreshLocks();
         setFeedback("learn-feedback", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
       }
-    }, 3500);
+    }, 5200);
   };
 }
 
-function goNextLearnWord(resetFail = false) {
-  stopAllAudioStates();
-  clearAdvanceTimer();
-  if (resetFail) learnFailCount = 0;
-
-  learnIndex++;
-  learnFailCount = 0;
-  renderLearnWord();
+function putIntoContainer(id) {
+  if (!stats[id].inContainer) stats[id].inContainer = true;
+  if (!container.includes(id)) container.push(id);
 }
 
-// ----------------- TEST A (Wort sichtbar) -----------------
-function renderTestA() {
-  clearAdvanceTimer();
-  stopAllAudioStates();
+function advanceLearn() {
+  const pack = getPackItems();
+  if (currentItemIdxInPack < pack.length - 1) {
+    currentItemIdxInPack++;
+    return render();
+  }
+  // Nach 4 Wörtern -> Test A
+  initTestCountsForPack();
+  mode = "testA";
+  testTargetId = null;
+  render();
+}
 
-  if (testTargetId == null) testTargetId = pickNextTargetId(testA_correct);
-  if (testTargetId == null) {
+function initTestCountsForPack() {
+  const pack = getPackItems();
+  testCounts = {};
+  for (const it of pack) testCounts[it.id] = 0;
+  testC_failStreakById = {};
+  for (const it of pack) testC_failStreakById[it.id] = 0;
+}
+
+function pickNextTargetId() {
+  const pack = getPackItems();
+  const remaining = pack.filter(it => (testCounts[it.id] || 0) < TEST_NEED_EACH);
+  if (!remaining.length) return null;
+  return remaining[Math.floor(Math.random() * remaining.length)].id;
+}
+
+function allTestsDoneForPack() {
+  const pack = getPackItems();
+  return pack.every(it => (testCounts[it.id] || 0) >= TEST_NEED_EACH);
+}
+
+function getPackItemById(id) {
+  return getPackItems().find(x => x.id === id) || null;
+}
+
+// ---------- TEST A: Wort (sichtbar) + Bild anklicken ----------
+function renderTestA() {
+  const pack = getPackItems();
+  if (allTestsDoneForPack()) {
+    // weiter zu Test B
+    initTestCountsForPack();
     mode = "testB";
     testTargetId = null;
     return render();
   }
 
-  const target = currentPack.find(x => x.id === testTargetId);
-  const packShuffled = shuffleArray([...currentPack]);
+  if (!testTargetId) testTargetId = pickNextTargetId();
+  const target = getPackItemById(testTargetId);
+  const grid = shuffleArray(pack);
 
   appEl.innerHTML = `
     <div class="screen screen-quiz">
       <div class="meta">
-        <div class="badge">Test A – Wort sichtbar</div>
-        <div class="badge">Ziel: jedes Bild 2× korrekt</div>
-        <div class="badge">Fortschritt: ${packProgressText(testA_correct)}</div>
+        <div class="badge">${escapeHtml(packLabel())}</div>
+        <div class="badge">Test A</div>
       </div>
 
-      <h1>Welches Bild passt?</h1>
+      <h1>Test A: Wort & Bild</h1>
+      <p>Tippe das richtige Bild zum Wort.</p>
+
       <div class="card card-word" style="text-align:center;">
-        <div class="word-text" style="font-size:30px; line-height:1.1;">${escapeHtml(target.word)}</div>
-      </div>
-
-      <div class="icon-grid">
-        ${packShuffled.map((it) => `
-          <button class="icon-card" data-id="${it.id}" aria-label="Option">
-            <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="">
-          </button>
-        `).join("")}
+        <div class="word-text" style="font-size:34px;">${escapeHtml(target.word)}</div>
+        <div class="word-translation">${escapeHtml(target.de || "")}</div>
       </div>
 
       <div class="controls-audio">
         <button id="btn-hear" class="btn primary">Hören</button>
         <button id="btn-hear-slow" class="btn secondary">Langsam</button>
+      </div>
+
+      <div class="icon-grid">
+        ${grid.map(it => `
+          <button class="icon-card" data-id="${it.id}" aria-label="Option">
+            <img src="${imgSrc(it)}" alt="">
+          </button>
+        `).join("")}
       </div>
 
       <div id="testA-feedback" class="feedback"></div>
+      <div class="meta" style="margin-top:8px;">
+        ${pack.map(it => `<div class="badge">${escapeHtml(it.word)}: ${(testCounts[it.id]||0)}/${TEST_NEED_EACH}</div>`).join("")}
+      </div>
     </div>
   `;
 
-  attachImgFallbacks();
-
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
-  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak: null, btnLater: null });
 
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 0.7); };
+  const refresh = () => {
+    const lock = micRecording || ttsActive;
+    btnHear.disabled = lock;
+    btnHearSlow.disabled = lock;
+    appEl.querySelectorAll(".icon-card").forEach(b => b.disabled = lock);
+  };
+  setUiRefreshLocks(refresh);
+  refresh();
 
+  // Wort einmal automatisch sprechen (hilft, ist aber nicht "nur hören")
   speakWord(target.word, 1.0);
 
-  appEl.querySelectorAll(".icon-card").forEach((btn) => {
-    btn.onclick = async () => {
-      if (ttsActive || micRecording) return;
+  btnHear.onclick = () => speakWord(target.word, 1.0);
+  btnHearSlow.onclick = () => speakWord(target.word, 0.7);
 
+  appEl.querySelectorAll(".icon-card").forEach(btn => {
+    btn.onclick = async () => {
       const id = btn.getAttribute("data-id");
       if (id === target.id) {
-        const c = (testA_correct.get(target.id) || 0) + 1;
-        testA_correct.set(target.id, Math.min(2, c));
-        setFeedback("testA-feedback", "Richtig!", "ok");
-
-        await sleep(450);
-
-        if (allMastered(testA_correct)) {
-          mode = "testB";
-          testTargetId = null;
-          return render();
-        }
-
-        testTargetId = pickNextTargetId(testA_correct);
-        return renderTestA();
+        testCounts[id] = (testCounts[id] || 0) + 1;
+        setFeedback("testA-feedback", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
+        testTargetId = null;
+        await sleep(550);
+        renderTestA();
       } else {
-        setFeedback("testA-feedback", "Falsch. Nicht gezählt – versuch es nochmal.", "bad");
+        setFeedback("testA-feedback", "Falsch. Nicht gezählt – probier nochmal.", "bad");
       }
     };
   });
 }
 
-// ----------------- TEST B (nur hören) -----------------
+// ---------- TEST B: Nur hören + Bild anklicken (Wort NICHT sichtbar) ----------
 function renderTestB() {
-  clearAdvanceTimer();
-  stopAllAudioStates();
-
-  if (testTargetId == null) testTargetId = pickNextTargetId(testB_correct);
-  if (testTargetId == null) {
+  const pack = getPackItems();
+  if (allTestsDoneForPack()) {
+    // weiter zu Test C
+    initTestCountsForPack();
     mode = "testC";
     testTargetId = null;
-    testC_failStreak = 0;
     return render();
   }
 
-  const target = currentPack.find(x => x.id === testTargetId);
-  const packShuffled = shuffleArray([...currentPack]);
+  if (!testTargetId) testTargetId = pickNextTargetId();
+  const target = getPackItemById(testTargetId);
+  const grid = shuffleArray(pack);
 
   appEl.innerHTML = `
     <div class="screen screen-quiz">
       <div class="meta">
-        <div class="badge">Test B – Nur hören</div>
-        <div class="badge">Ziel: jedes Bild 2× korrekt</div>
-        <div class="badge">Fortschritt: ${packProgressText(testB_correct)}</div>
+        <div class="badge">${escapeHtml(packLabel())}</div>
+        <div class="badge">Test B</div>
       </div>
 
-      <h1>Hör zu und wähle</h1>
-      <p>Das Wort wird gesprochen. Tippe das passende Bild an.</p>
-
-      <div class="icon-grid">
-        ${packShuffled.map((it) => `
-          <button class="icon-card" data-id="${it.id}" aria-label="Option">
-            <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="">
-          </button>
-        `).join("")}
-      </div>
+      <h1>Test B: Nur hören</h1>
+      <p>Höre das Wort und tippe das richtige Bild.</p>
 
       <div class="controls-audio">
         <button id="btn-hear" class="btn primary">Hören</button>
         <button id="btn-hear-slow" class="btn secondary">Langsam</button>
       </div>
 
+      <div class="icon-grid">
+        ${grid.map(it => `
+          <button class="icon-card" data-id="${it.id}" aria-label="Option">
+            <img src="${imgSrc(it)}" alt="">
+          </button>
+        `).join("")}
+      </div>
+
       <div id="testB-feedback" class="feedback"></div>
+      <div class="meta" style="margin-top:8px;">
+        ${pack.map(it => `<div class="badge">${escapeHtml(it.word)}: ${(testCounts[it.id]||0)}/${TEST_NEED_EACH}</div>`).join("")}
+      </div>
     </div>
   `;
 
-  attachImgFallbacks();
-
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
-  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak: null, btnLater: null });
 
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 0.7); };
+  const refresh = () => {
+    const lock = micRecording || ttsActive;
+    btnHear.disabled = lock;
+    btnHearSlow.disabled = lock;
+    appEl.querySelectorAll(".icon-card").forEach(b => b.disabled = lock);
+  };
+  setUiRefreshLocks(refresh);
+  refresh();
 
+  // automatisch abspielen
   speakWord(target.word, 1.0);
 
-  appEl.querySelectorAll(".icon-card").forEach((btn) => {
-    btn.onclick = async () => {
-      if (ttsActive || micRecording) return;
+  btnHear.onclick = () => speakWord(target.word, 1.0);
+  btnHearSlow.onclick = () => speakWord(target.word, 0.7);
 
+  appEl.querySelectorAll(".icon-card").forEach(btn => {
+    btn.onclick = async () => {
       const id = btn.getAttribute("data-id");
       if (id === target.id) {
-        const c = (testB_correct.get(target.id) || 0) + 1;
-        testB_correct.set(target.id, Math.min(2, c));
-        setFeedback("testB-feedback", "Richtig!", "ok");
-
-        await sleep(450);
-
-        if (allMastered(testB_correct)) {
-          mode = "testC";
-          testTargetId = null;
-          testC_failStreak = 0;
-          return render();
-        }
-
-        testTargetId = pickNextTargetId(testB_correct);
-        return renderTestB();
+        testCounts[id] = (testCounts[id] || 0) + 1;
+        setFeedback("testB-feedback", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
+        testTargetId = null;
+        await sleep(550);
+        renderTestB();
       } else {
-        setFeedback("testB-feedback", "Falsch. Nicht gezählt – hör nochmal.", "bad");
+        setFeedback("testB-feedback", "Falsch. Nicht gezählt – probier nochmal.", "bad");
       }
     };
   });
 }
 
-// ----------------- TEST C (Bild -> sprechen) -----------------
+// ---------- TEST C: Bild -> sprechen (2x je Bild korrekt) ----------
 function renderTestC() {
-  clearAdvanceTimer();
-  stopAllAudioStates();
-
-  if (testTargetId == null) testTargetId = pickNextTargetId(testC_correct);
-  if (testTargetId == null) {
-    completeCurrentPack();
-    return;
+  const pack = getPackItems();
+  if (allTestsDoneForPack()) {
+    // Nach Test C -> Review (nur wenn Container gefüllt), sonst nächstes Pack
+    if (container.length) {
+      mode = "review";
+      currentItemIdxInPack = 0; // wird in review als index über container verwendet
+      return render();
+    }
+    return nextPackOrSentences();
   }
 
-  const target = currentPack.find(x => x.id === testTargetId);
+  if (!testTargetId) testTargetId = pickNextTargetId();
+  const target = getPackItemById(testTargetId);
+
+  const hintUnlocked = (testC_failStreakById[target.id] || 0) >= TESTC_MAX_FAILS_BEFORE_HINT;
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
-        <div class="badge">Test C – Bild sprechen</div>
-        <div class="badge">Ziel: jedes Bild 2× korrekt sprechen</div>
-        <div class="badge">Fortschritt: ${packProgressText(testC_correct)}</div>
+        <div class="badge">${escapeHtml(packLabel())}</div>
+        <div class="badge">Test C</div>
+        <div class="badge">${escapeHtml(target.word)}: ${(testCounts[target.id]||0)}/${TEST_NEED_EACH}</div>
       </div>
 
-      <h1>Wie heißt das?</h1>
+      <h1>Test C: Bild → Wort sprechen</h1>
+      <p>Sprich das Wort passend zum Bild.</p>
 
       <div class="card card-word">
-        <img src="${target.img}" data-fallback="${escapeHtml(target.fallbackImg || "")}" alt="Bild" class="word-image">
-        <div class="word-translation" style="margin-top:10px;">Sprich das Wort (ohne dass es angezeigt wird).</div>
+        <img src="${imgSrc(target)}" alt="" class="word-image">
+        <div class="word-translation">${escapeHtml(target.de || "")}</div>
       </div>
 
       <div class="controls-audio">
-        <button id="btn-hear" class="btn primary">Hören</button>
-        <button id="btn-hear-slow" class="btn secondary">Langsam</button>
+        <button id="btn-hear" class="btn secondary" ${hintUnlocked ? "" : "disabled"}>Hören</button>
+        <button id="btn-hear-slow" class="btn secondary" ${hintUnlocked ? "" : "disabled"}>Langsam</button>
       </div>
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
+        <button id="btn-later" class="btn secondary">Später noch einmal</button>
         <div id="testC-feedback" class="feedback" style="flex-basis:100%;"></div>
       </div>
 
-      <div style="margin-top:10px; font-size:13px; opacity:.8;">
-        Fehlversuche aktuell: <strong>${testC_failStreak}</strong> / ${TESTC_FAILS_BEFORE_TELL}
+      <div class="meta" style="margin-top:8px;">
+        ${pack.map(it => `<div class="badge">${escapeHtml(it.word)}: ${(testCounts[it.id]||0)}/${TEST_NEED_EACH}</div>`).join("")}
       </div>
     </div>
   `;
 
-  attachImgFallbacks();
-
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
+  const btnLater = document.getElementById("btn-later");
 
-  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater: null });
+  const refresh = () => {
+    const lock = micRecording || ttsActive;
+    btnSpeak.disabled = lock;
+    btnLater.disabled = lock;
+    // Hear buttons nur wenn unlocked und nicht blockiert
+    btnHear.disabled = lock || !hintUnlocked;
+    btnHearSlow.disabled = lock || !hintUnlocked;
+  };
+  setUiRefreshLocks(refresh);
+  refresh();
 
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(target.word, 0.7); };
+  btnHear.onclick = () => speakWord(target.word, 1.0);
+  btnHearSlow.onclick = () => speakWord(target.word, 0.7);
+
+  btnLater.onclick = async () => {
+    setFeedback("testC-feedback", "Okay – später nochmal (nicht gezählt).", "bad");
+    testTargetId = null;
+    await sleep(450);
+    renderTestC();
+  };
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
-    stopAllAudioStates();
-
     if (!speechRecAvailable()) {
       setFeedback("testC-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
       return;
     }
 
-    setFeedback("testC-feedback", "Sprich jetzt. Aufnahme stoppt automatisch.", null);
+    setFeedback("testC-feedback", "Sprich jetzt…", null);
 
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
@@ -907,122 +878,84 @@ function renderTestC() {
     micRecording = true;
     refreshLocks();
 
-    clearAutoStopTimer();
+    clearTimers();
     autoStopTimer = setTimeout(async () => {
       try {
-        setFeedback("testC-feedback", "Verarbeite…", null);
-
-        const recognizedText = await stopBrowserASR();
-        const res = scoreSpeech(target.word, recognizedText);
-
+        const heardRaw = (await stopBrowserASR()).trim();
         micRecording = false;
         refreshLocks();
 
-        if (res.pass) {
-          const c = (testC_correct.get(target.id) || 0) + 1;
-          testC_correct.set(target.id, Math.min(2, c));
-          testC_failStreak = 0;
-
-          setFeedback("testC-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Gezählt!`, "ok");
-
-          clearAdvanceTimer();
-          advanceTimer = setTimeout(() => {
-            testTargetId = pickNextTargetId(testC_correct);
-            renderTestC();
-          }, AUTO_ADVANCE_MS);
-
+        if (!heardRaw) {
+          setFeedback("testC-feedback", "Ich habe nichts verstanden (leer). Nicht gezählt – bitte nochmal deutlich.", "bad");
           return;
         }
 
-        testC_failStreak++;
-        setFeedback("testC-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Nicht gezählt.`, "bad");
+        const res = scoreSpeech(target.word, heardRaw);
+        const used = res.usedHeard || heardRaw;
 
-        if (testC_failStreak >= TESTC_FAILS_BEFORE_TELL) {
-          reviewSet.add(target.id);
-          testC_failStreak = 0;
+        if (res.pass) {
+          testCounts[target.id] = (testCounts[target.id] || 0) + 1;
+          testC_failStreakById[target.id] = 0;
 
-          setFeedback("testC-feedback", "Lernhilfe: Hör nochmal zu. (Dieses Wort kommt später nochmal.)", "bad");
-          await sleep(250);
-          speakWord(target.word, 0.7);
+          setFeedback("testC-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ → „${used}“ · Gezählt! (${testCounts[target.id]}/${TEST_NEED_EACH})`, "ok");
 
-          clearAdvanceTimer();
-          advanceTimer = setTimeout(() => {
-            testTargetId = pickNextTargetId(testC_correct);
-            renderTestC();
-          }, 900);
+          testTargetId = null;
+          clearTimers();
+          advanceTimer = setTimeout(() => renderTestC(), 800);
+          return;
         }
+
+        // Fail (gezählt)
+        testC_failStreakById[target.id] = (testC_failStreakById[target.id] || 0) + 1;
+
+        const n = testC_failStreakById[target.id];
+        if (n >= TESTC_MAX_FAILS_BEFORE_HINT) {
+          // Hilfe: Wort wird gesprochen
+          setFeedback("testC-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ → „${used}“ · Hilfe: Hör nochmal zu.`, "bad");
+          speakWord(target.word, 1.0);
+          // danach bleiben wir bei gleichem Target
+          renderTestC();
+          return;
+        }
+
+        setFeedback("testC-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ → „${used}“ · Nochmal (${n}/${TESTC_MAX_FAILS_BEFORE_HINT})`, "bad");
       } catch (e) {
         console.error(e);
         micRecording = false;
         refreshLocks();
         setFeedback("testC-feedback", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
       }
-    }, 3800);
+    }, 5600);
   };
 }
 
-// ----------------- SENTENCE PHASE (mit Bild) -----------------
-function currentSentenceObj() {
-  if (sentenceMode === "main") return SENTENCES[sentenceIndex] || null;
-  return sentenceReviewQueue[sentenceIndex] || null;
-}
+// ---------- REVIEW: Container-Wörter nach dem Pack nochmal kurz ----------
+function renderReview() {
+  const pack = getPackItems();
+  const reviewIds = container.filter(id => pack.some(it => it.id === id));
 
-function renderSentence() {
-  clearAdvanceTimer();
-  stopAllAudioStates();
-
-  if (sentenceMode === "main") {
-    if (sentenceIndex >= SENTENCES.length) {
-      if (sentenceReviewSet.size > 0) {
-        sentenceMode = "review";
-        sentenceReviewQueue = Array.from(sentenceReviewSet).map(id => SENTENCES.find(s => s.id === id)).filter(Boolean);
-        sentenceIndex = 0;
-        sentenceFailCount = 0;
-      } else {
-        mode = "end";
-        return render();
-      }
-    }
-  } else {
-    if (sentenceIndex >= sentenceReviewQueue.length) {
-      if (sentenceReviewSet.size > 0) {
-        sentenceReviewQueue = Array.from(sentenceReviewSet).map(id => SENTENCES.find(s => s.id === id)).filter(Boolean);
-        sentenceIndex = 0;
-        sentenceFailCount = 0;
-      } else {
-        mode = "end";
-        return render();
-      }
-    }
+  if (!reviewIds.length) {
+    return nextPackOrSentences();
   }
 
-  const sObj = currentSentenceObj();
-  if (!sObj) {
-    mode = "end";
-    return render();
-  }
-
-  const imgItem = ITEM_BY_ID.get(sObj.imgId);
-  const imgSrc = imgItem?.img || "";
-  const imgFallback = imgItem?.fallbackImg || "";
-
-  const progressLabel = sentenceMode === "main"
-    ? `Satz ${sentenceIndex + 1} von ${SENTENCES.length}`
-    : `Wiederholung ${sentenceIndex + 1} von ${Math.max(1, sentenceReviewQueue.length)}`;
+  const idx = Math.min(currentItemIdxInPack, reviewIds.length - 1);
+  const id = reviewIds[idx];
+  const it = getPackItemById(id);
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
-        <div class="badge">Sätze trainieren</div>
-        <div class="badge">${escapeHtml(progressLabel)}</div>
-        <div class="badge">Review offen: ${sentenceReviewSet.size}</div>
+        <div class="badge">${escapeHtml(packLabel())}</div>
+        <div class="badge">Review-Container</div>
+        <div class="badge">${idx + 1} von ${reviewIds.length}</div>
       </div>
 
-      <h1>Satz nachsprechen</h1>
+      <h1>Nochmal üben</h1>
 
-      <div class="card card-word" style="text-align:center;">
-        ${imgSrc ? `<img src="${imgSrc}" data-fallback="${escapeHtml(imgFallback)}" alt="" class="word-image">` : ""}
-        <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(sObj.text)}</div>
+      <div class="card card-word">
+        <img src="${imgSrc(it)}" alt="" class="word-image">
+        <div class="word-text">${escapeHtml(it.word)}</div>
+        <div class="word-translation">${escapeHtml(it.de || "")}</div>
       </div>
 
       <div class="controls-audio">
@@ -1032,46 +965,157 @@ function renderSentence() {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <button id="btn-later" class="btn secondary">Später noch einmal</button>
-        <div id="sent-feedback" class="feedback" style="flex-basis:100%;"></div>
-      </div>
-
-      <div style="margin-top:10px; font-size:13px; opacity:.8;">
-        Fehlversuche: <strong>${sentenceFailCount}</strong> / ${FAILS_TO_REVIEW}
+        <button id="btn-next" class="btn secondary">Weiter</button>
+        <div id="rev-feedback" class="feedback" style="flex-basis:100%;"></div>
       </div>
     </div>
   `;
 
-  attachImgFallbacks();
-
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
-  const btnLater = document.getElementById("btn-later");
+  const btnNext = document.getElementById("btn-next");
 
-  setLocksForButtons({ btnHear, btnHearSlow, btnSpeak, btnLater });
+  const refresh = () => {
+    const lock = micRecording || ttsActive;
+    btnHear.disabled = lock;
+    btnHearSlow.disabled = lock;
+    btnSpeak.disabled = lock;
+    btnNext.disabled = lock;
+  };
+  setUiRefreshLocks(refresh);
+  refresh();
 
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(sObj.text, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(sObj.text, 0.7); };
+  btnHear.onclick = () => speakWord(it.word, 1.0);
+  btnHearSlow.onclick = () => speakWord(it.word, 0.7);
 
-  btnLater.onclick = async () => {
-    if (micRecording || ttsActive) return;
-    sentenceReviewSet.add(sObj.id);
-    setFeedback("sent-feedback", "Okay – dieser Satz kommt später nochmal.", "ok");
-    await sleep(450);
-    nextSentence();
+  btnNext.onclick = () => {
+    if (idx < reviewIds.length - 1) currentItemIdxInPack++;
+    else {
+      // Review fertig -> nächstes Pack oder Sätze
+      return nextPackOrSentences();
+    }
+    renderReview();
   };
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
-    stopAllAudioStates();
+    if (!speechRecAvailable()) {
+      setFeedback("rev-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
 
+    setFeedback("rev-feedback", "Sprich jetzt…", null);
+
+    try { window.speechSynthesis.cancel(); } catch {}
+    ttsActive = false;
+    refreshLocks();
+    await sleep(120);
+
+    const started = startBrowserASR(ASR_LANG);
+    if (!started) {
+      setFeedback("rev-feedback", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
+      return;
+    }
+
+    micRecording = true;
+    refreshLocks();
+
+    clearTimers();
+    autoStopTimer = setTimeout(async () => {
+      const heardRaw = (await stopBrowserASR()).trim();
+      micRecording = false;
+      refreshLocks();
+
+      if (!heardRaw) {
+        setFeedback("rev-feedback", "Ich habe nichts verstanden (leer). Nicht gezählt.", "bad");
+        return;
+      }
+
+      const res = scoreSpeech(it.word, heardRaw);
+      const used = res.usedHeard || heardRaw;
+
+      if (res.pass) {
+        setFeedback("rev-feedback", `Aussprache: ${res.overall}% · „${heardRaw}“ → „${used}“ · Gut!`, "ok");
+      } else {
+        setFeedback("rev-feedback", `Aussprache: ${res.overall}% · „${heardRaw}“ → „${used}“ · Nochmal.`, "bad");
+      }
+    }, 5200);
+  };
+}
+
+// ---------- SENTENCES (einfach, als Start – später feinjustierbar) ----------
+function renderSentences() {
+  const sentences = [
+    { text: "J'ouvre la porte.", imgId: "w06_tuer" },
+    { text: "Je ferme la porte.", imgId: "w06_tuer" },
+    { text: "J'écoute.", imgId: "w09_hoeren" },
+    { text: "Je parle.", imgId: "w10_sprechen" },
+    { text: "Je lis le livre.", imgId: "w05_buch" },
+    { text: "J'écris.", imgId: "w12_schreiben" }
+  ];
+
+  if (!window.__sent_idx) window.__sent_idx = 0;
+  const i = window.__sent_idx;
+
+  if (i >= sentences.length) {
+    mode = "end";
+    return render();
+  }
+
+  const s = sentences[i];
+  const imgItem = ITEMS.find(x => x.id === s.imgId) || ITEMS[0];
+
+  appEl.innerHTML = `
+    <div class="screen screen-learn">
+      <div class="meta">
+        <div class="badge">Sätze</div>
+        <div class="badge">Satz ${i + 1} von ${sentences.length}</div>
+      </div>
+
+      <h1>Satztraining</h1>
+
+      <div class="card card-word">
+        <img src="${imgSrc(imgItem)}" alt="" class="word-image">
+        <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(s.text)}</div>
+      </div>
+
+      <div class="controls-audio">
+        <button id="btn-hear" class="btn primary">Hören</button>
+        <button id="btn-hear-slow" class="btn secondary">Langsam</button>
+      </div>
+
+      <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <button id="btn-speak" class="btn mic">Ich spreche</button>
+        <div id="sent-feedback" class="feedback" style="flex-basis:100%;"></div>
+      </div>
+    </div>
+  `;
+
+  const btnHear = document.getElementById("btn-hear");
+  const btnHearSlow = document.getElementById("btn-hear-slow");
+  const btnSpeak = document.getElementById("btn-speak");
+
+  const refresh = () => {
+    const lock = micRecording || ttsActive;
+    btnHear.disabled = lock;
+    btnHearSlow.disabled = lock;
+    btnSpeak.disabled = lock;
+  };
+  setUiRefreshLocks(refresh);
+  refresh();
+
+  btnHear.onclick = () => speakWord(s.text, 1.0);
+  btnHearSlow.onclick = () => speakWord(s.text, 0.75);
+
+  btnSpeak.onclick = async () => {
+    if (micRecording || ttsActive) return;
     if (!speechRecAvailable()) {
       setFeedback("sent-feedback", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
       return;
     }
 
-    setFeedback("sent-feedback", "Sprich jetzt. Aufnahme stoppt automatisch.", null);
+    setFeedback("sent-feedback", "Sprich jetzt…", null);
 
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
@@ -1087,135 +1131,42 @@ function renderSentence() {
     micRecording = true;
     refreshLocks();
 
-    clearAutoStopTimer();
+    clearTimers();
     autoStopTimer = setTimeout(async () => {
-      try {
-        setFeedback("sent-feedback", "Verarbeite…", null);
+      const heardRaw = (await stopBrowserASR()).trim();
+      micRecording = false;
+      refreshLocks();
 
-        const recognizedText = await stopBrowserASR();
-        const res = scoreSpeech(sObj.text, recognizedText);
-
-        micRecording = false;
-        refreshLocks();
-
-        if (res.pass) {
-          sentenceReviewSet.delete(sObj.id);
-          setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Weiter!`, "ok");
-          sentenceFailCount = 0;
-
-          clearAdvanceTimer();
-          advanceTimer = setTimeout(() => nextSentence(), AUTO_ADVANCE_MS);
-          return;
-        }
-
-        sentenceFailCount++;
-        setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Nochmal.`, "bad");
-
-        if (sentenceFailCount >= FAILS_TO_REVIEW) {
-          sentenceReviewSet.add(sObj.id);
-          setFeedback("sent-feedback", "Noch nicht sicher. Dieser Satz kommt später nochmal.", "bad");
-          sentenceFailCount = 0;
-          clearAdvanceTimer();
-          advanceTimer = setTimeout(() => nextSentence(), 900);
-        }
-      } catch (e) {
-        console.error(e);
-        micRecording = false;
-        refreshLocks();
-        setFeedback("sent-feedback", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
+      if (!heardRaw) {
+        setFeedback("sent-feedback", "Ich habe nichts verstanden (leer). Nicht gezählt.", "bad");
+        return;
       }
-    }, 4500);
+
+      const res = scoreSpeech(s.text, heardRaw);
+      if (res.pass) {
+        setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ · Weiter!`, "ok");
+        window.__sent_idx++;
+        clearTimers();
+        advanceTimer = setTimeout(() => renderSentences(), 950);
+      } else {
+        setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${heardRaw}“ · Nochmal.`, "bad");
+      }
+    }, 6500);
   };
 }
 
-function nextSentence() {
-  stopAllAudioStates();
-  clearAdvanceTimer();
-  sentenceIndex++;
-  renderSentence();
-}
-
-// ----------------- END SCREEN -----------------
-function renderEndScreen() {
-  clearAdvanceTimer();
-  stopAllAudioStates();
-
+// ---------- END ----------
+function renderEnd() {
   appEl.innerHTML = `
     <div class="screen screen-end">
       <h1>Fertig</h1>
-      <p>Wörter + 3 Tests + Sätze abgeschlossen.</p>
-      <button id="btn-repeat" class="btn primary">Nochmal starten</button>
+      <p>Du hast alle Packs, Tests und Sätze abgeschlossen.</p>
+      <button id="btn-restart" class="btn primary">Neu starten</button>
     </div>
   `;
-
-  document.getElementById("btn-repeat").onclick = () => startProgram();
-}
-
-// ----------------- TTS -----------------
-function initTTS() {
-  if (!ttsSupported) {
-    status("Sprachausgabe wird von diesem Browser nicht unterstützt.");
-    return;
-  }
-
-  const pickVoice = () => {
-    ttsVoices = window.speechSynthesis.getVoices() || [];
-    if (!ttsVoices.length) return;
-
-    ttsVoice =
-      ttsVoices.find((v) => (v.lang || "").toLowerCase().startsWith(TTS_LANG_PREFIX)) ||
-      ttsVoices[0];
-
-    status(ttsVoice ? `Sprachausgabe bereit: ${ttsVoice.name} (${ttsVoice.lang})` : "Sprachausgabe bereit.");
+  document.getElementById("btn-restart").onclick = () => {
+    window.__sent_idx = 0;
+    start();
   };
-
-  pickVoice();
-  window.speechSynthesis.onvoiceschanged = pickVoice;
 }
 
-function speakWord(text, rate = 1.0) {
-  if (!ttsSupported) return;
-  if (!text) return;
-  if (micRecording) return;
-
-  try {
-    window.speechSynthesis.cancel();
-
-    const utter = new SpeechSynthesisUtterance(text);
-    if (ttsVoice) {
-      utter.voice = ttsVoice;
-      utter.lang = ttsVoice.lang;
-    } else {
-      utter.lang = ASR_LANG;
-    }
-    utter.rate = rate;
-
-    utter.onstart = () => { ttsActive = true; refreshLocks(); };
-    utter.onend = () => { ttsActive = false; refreshLocks(); };
-    utter.onerror = () => { ttsActive = false; refreshLocks(); };
-
-    window.speechSynthesis.speak(utter);
-  } catch (e) {
-    console.error("TTS error", e);
-    ttsActive = false;
-    refreshLocks();
-    status("Fehler bei der Sprachausgabe.");
-  }
-}
-
-// ----------------- CLEANUP -----------------
-function stopAllAudioStates() {
-  clearAutoStopTimer();
-
-  if (_sr) {
-    try { _sr.stop(); } catch {}
-    _sr = null;
-  }
-
-  micRecording = false;
-
-  try { window.speechSynthesis?.cancel?.(); } catch {}
-  ttsActive = false;
-
-  refreshLocks();
-}
