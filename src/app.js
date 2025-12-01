@@ -1,11 +1,8 @@
 // src/app.js – FIXED 12 Bilder (w01..w12) + 80% + Container + 3 Tests + Satzphase
-// Wichtig (Änderungen jetzt):
-// - ALLE Sprech-Aufgaben: 1x korrekt reicht -> weiter
-//   (Learn, Review/Container, Test C, Satzphase)
-// - Test A/B (klicken): bleibt wie es ist (2x korrekt pro Bild) -> NICHT sprechen
-// - Test C: 1x korrekt pro Bild reicht
-// - Test C: Button "Weiter & später nochmal" ist IMMER sichtbar und klickbar
-// - Test C: nach 3x falsch -> auto weiter + kommt später nochmal + Wort vorsagen
+// Fix jetzt:
+// - Test C: Button "Weiter & später nochmal" erscheint erst NACH 3 Fehlversuchen (nicht permanent)
+// - Sprech-Hinweistext: statt "Sprich 1x ..." -> "Sprich das Wort 2x (kurz hintereinander) ..."
+// Hinweis: 2x sprechen = im selben Durchgang (z.B. "je je"), nicht zwei getrennte Versuche.
 
 const LESSON_ID = "W1D1";
 
@@ -25,7 +22,7 @@ const TEST_NEED_EACH = 2;
 // C: 1x richtig pro Bild (Sprechen)
 const TESTC_NEED_EACH = 1;
 
-// Test C: nach 3 Fehlversuchen -> Auto-Weiter + später nochmal
+// Test C: nach 3 Fehlversuchen / "leer" => Button erscheint (Weiter & später nochmal)
 const TESTC_DEFER_AFTER = 3;
 
 // Aufnahmezeiten
@@ -372,7 +369,7 @@ function addToContainer(id) {
   if (!container.includes(id)) container.push(id);
 }
 
-// ✅ neu: Bedarf als Parameter (Test A/B = 2, Test C = 1)
+// Bedarf als Parameter (Test A/B = 2, Test C = 1)
 function allCountsReached(needEach) {
   return getPackItems().every(it => (testCounts[it.id] || 0) >= needEach);
 }
@@ -405,7 +402,7 @@ function render() {
   return renderEnd();
 }
 
-// ---------- PHASE learn (Sprechen: 1x korrekt reicht) ----------
+// ---------- PHASE learn (Sprechen: weiterhin 1x korrekt reicht; Hinweistext: Wort 2x sprechen) ----------
 function renderLearn() {
   if (cursor >= currentList.length) {
     if (container.length) {
@@ -486,7 +483,9 @@ function renderLearn() {
       return;
     }
 
-    setFeedback("fb", "Sprich 1x – dann kurze Pause…", null);
+    // ✅ Text geändert:
+    setFeedback("fb", "Sprich das Wort 2x (kurz hintereinander) – dann kurze Pause…", null);
+
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -546,7 +545,7 @@ function renderLearn() {
   };
 }
 
-// ---------- PHASE review (Sprechen: 1x korrekt reicht + auto weiter) ----------
+// ---------- PHASE review (Hinweistext ebenfalls: Wort 2x sprechen) ----------
 function renderReview() {
   if (cursor >= currentList.length) {
     mode = "testA";
@@ -613,7 +612,9 @@ function renderReview() {
       return;
     }
 
-    setFeedback("fb", "Sprich 1x – dann kurze Pause…", null);
+    // ✅ Text geändert:
+    setFeedback("fb", "Sprich das Wort 2x (kurz hintereinander) – dann kurze Pause…", null);
+
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -660,7 +661,7 @@ function renderReview() {
   };
 }
 
-// ---------- TEST A (Wort steht da + Bild klicken) ----------
+// ---------- TEST A/B unverändert ----------
 function renderTestA() {
   const pack = getPackItems();
 
@@ -748,7 +749,6 @@ function renderTestA() {
   });
 }
 
-// ---------- TEST B (Wort hören + Bild klicken) ----------
 function renderTestB() {
   const pack = getPackItems();
 
@@ -833,11 +833,10 @@ function renderTestB() {
   });
 }
 
-// ---------- TEST C (Bild -> sprechen) ----------
+// ---------- TEST C (Button erscheint erst nach 3 Fehlversuchen) ----------
 function renderTestC() {
   const pack = getPackItems();
 
-  // ✅ Test C ist jetzt 1x pro Bild korrekt
   if (allCountsReached(TESTC_NEED_EACH)) return nextPackOrSentences();
 
   if (!testTargetId) {
@@ -850,9 +849,7 @@ function renderTestC() {
   const target = ID2ITEM[testTargetId];
   const streak = testC_failStreak[target.id] || 0;
 
-  // ✅ Button immer sichtbar & klickbar (für manuelles Weiterschalten)
-  const canDeferBtn = true;
-  const helpUnlocked = true;
+  const showDeferBtn = streak >= TESTC_DEFER_AFTER; // ✅ erst ab 3
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
@@ -876,7 +873,7 @@ function renderTestC() {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <button id="btn-defer" class="btn secondary">Weiter & später nochmal</button>
+        <button id="btn-defer" class="btn secondary" style="display:${showDeferBtn ? "inline-flex" : "none"};">Weiter & später nochmal</button>
         <div id="fb" class="feedback" style="flex-basis:100%;"></div>
       </div>
 
@@ -900,9 +897,9 @@ function renderTestC() {
   const refresh = () => {
     const lock = micRecording || ttsActive;
     btnSpeak.disabled = lock;
-    btnHear.disabled = lock || !helpUnlocked;
-    btnHearSlow.disabled = lock || !helpUnlocked;
-    btnDefer.disabled = lock || !canDeferBtn;
+    btnHear.disabled = lock;
+    btnHearSlow.disabled = lock;
+    if (btnDefer) btnDefer.disabled = lock;
   };
   setUiRefreshLocks(refresh);
   refresh();
@@ -910,14 +907,16 @@ function renderTestC() {
   btnHear.onclick = () => speakWord(target.word, 1.0);
   btnHearSlow.onclick = () => speakWord(target.word, 0.7);
 
-  btnDefer.onclick = async () => {
-    testC_deferred.add(target.id);
-    testC_failStreak[target.id] = 0;
-    testTargetId = null;
-    setFeedback("fb", "Okay – dieses Wort kommt später nochmal. Weiter…", "bad");
-    await sleep(250);
-    renderTestC();
-  };
+  if (btnDefer) {
+    btnDefer.onclick = async () => {
+      testC_deferred.add(target.id);
+      testC_failStreak[target.id] = 0;
+      testTargetId = null;
+      setFeedback("fb", "Okay – dieses Wort kommt später nochmal. Weiter…", "bad");
+      await sleep(250);
+      renderTestC();
+    };
+  }
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
@@ -926,7 +925,9 @@ function renderTestC() {
       return;
     }
 
-    setFeedback("fb", "Sprich 1x – dann kurze Pause…", null);
+    // ✅ Text geändert:
+    setFeedback("fb", "Sprich das Wort 2x (kurz hintereinander) – dann kurze Pause…", null);
+
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -950,19 +951,16 @@ function renderTestC() {
 
         const heard = (txt || "").trim();
 
-        // ✅ auch "leer" zählt jetzt als Fehlversuch für auto-defer (aber NICHT als richtig)
         if (!heard) {
           testC_failStreak[target.id] = (testC_failStreak[target.id] || 0) + 1;
           const n = testC_failStreak[target.id];
 
           if (n >= TESTC_DEFER_AFTER) {
-            testC_deferred.add(target.id);
-            testC_failStreak[target.id] = 0;
-            setFeedback("fb", "Ich habe nichts verstanden (leer). Weiter… (kommt später nochmal)", "bad");
+            // ✅ Button jetzt einblenden (statt permanent oder sofort skip)
+            if (btnDefer) btnDefer.style.display = "inline-flex";
+            setFeedback("fb", "3× nichts verstanden. Du kannst jetzt weitergehen und später nochmal üben.", "bad");
             speakWord(target.word, 1.0);
-            testTargetId = null;
-            await sleep(650);
-            renderTestC();
+            refreshLocks();
             return;
           }
 
@@ -973,7 +971,6 @@ function renderTestC() {
         const res = scoreSpeech(target.word, heard);
 
         if (res.pass) {
-          // ✅ 1x korrekt reicht
           testCounts[target.id] = (testCounts[target.id] || 0) + 1;
           testC_failStreak[target.id] = 0;
           testC_deferred.delete(target.id);
@@ -991,15 +988,11 @@ function renderTestC() {
         const n = testC_failStreak[target.id];
 
         if (n >= TESTC_DEFER_AFTER) {
-          testC_deferred.add(target.id);
-          testC_failStreak[target.id] = 0;
-
-          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Weiter… (kommt später nochmal)`, "bad");
+          // ✅ Button jetzt einblenden (statt permanent oder automatisch skip)
+          if (btnDefer) btnDefer.style.display = "inline-flex";
+          setFeedback("fb", `3× falsch. Du kannst jetzt weitergehen und später nochmal üben.`, "bad");
           speakWord(target.word, 1.0);
-
-          testTargetId = null;
-          await sleep(650);
-          renderTestC();
+          refreshLocks();
           return;
         }
 
@@ -1014,7 +1007,7 @@ function renderTestC() {
   };
 }
 
-// ---------- Satzphase (Sprechen: 1x korrekt reicht) ----------
+// ---------- Satzphase (unverändert, Hinweis bleibt 1x, weil Satz) ----------
 function renderSentences() {
   if (window.__sent_stage == null) window.__sent_stage = "easy";
   if (window.__sent_idx == null) window.__sent_idx = 0;
@@ -1101,7 +1094,8 @@ function renderSentences() {
       return;
     }
 
-    setFeedback("fb", "Sprich 1x – dann kurze Pause…", null);
+    setFeedback("fb", "Sprich den Satz 1x – dann kurze Pause…", null);
+
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
@@ -1166,5 +1160,6 @@ function renderEnd() {
     render();
   };
 }
+
 
 
