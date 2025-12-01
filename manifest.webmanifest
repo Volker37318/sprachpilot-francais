@@ -1,0 +1,9 @@
+{
+  "name": "Sprachpilot",
+  "short_name": "Sprachpilot",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#0a7cff",
+  "icons": []
+}
