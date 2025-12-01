@@ -1,25 +1,26 @@
-// src/app.js – Vor-A1 Deutsch (STABIL: feste 12 Bilder, 4er-Packs + 3 Tests + Sätze)
+// src/app.js – Vor-A1 / Klassensprache FRANZÖSISCH
 //
 // Flow pro 4er-Pack:
-// 1) Lernen + Aussprache (Hören/Langsam/Sprechen/Später)
+// 1) Lernen + Aussprache (Hören/Langsam/Ich spreche/Später)
 //    - ab 80% -> nächstes Wort
 //    - nach 4x falsch -> Wort in Review-Container, dann weiter
 // 2) Test A (Wort sichtbar): Wort + (Hören/Langsam) -> richtiges Bild klicken
 //    - bis jedes der 4 Bilder 2× korrekt geklickt wurde (Fehler zählen nicht)
 // 3) Test B (nur Hören): Wort wird gesprochen (ohne Text) -> Bild klicken
-//    - bis jedes Bild 2× korrekt geklickt wurde (Fehler zählen nicht)
+//    - bis jedes Bild 2× korrekt angeklickt wurde (Fehler zählen nicht)
 // 4) Test C (Produktion): Bild -> Nutzer spricht Wort
 //    - bis jedes Bild 2× korrekt gesprochen wurde
-//    - unkorrekt zählt nicht
-//    - nach 3 Fehlversuchen: System sagt Wort (Lernhilfe), Wort bleibt im Review-Container
+//    - unkorrekte Versuche zählen nicht
+//    - nach 3 Fehlversuchen: System sagt Wort (Lernhilfe) und Wort kommt in Review
 //
 // Danach: nächstes 4er-Pack. Am Ende: Review-Container wiederholen.
-// NEU danach: Satzphase (20 Sätze) mit Hören/Langsam/Sprechen/Später + Satz-Review.
+// Danach: Satzphase (mit Bild + Satztext) + Satz-Review.
 
 const LESSON_ID = "W1D1";
-const TITLE = "Vor-A1 Deutsch";
-const ASR_LANG = "de-DE";
-const TTS_LANG_PREFIX = "de";
+const TITLE = "Vor-A1 – Klassensprache Französisch";
+
+const ASR_LANG = "fr-FR";          // <- WICHTIG: Französisch
+const TTS_LANG_PREFIX = "fr";       // <- WICHTIG: Französisch
 
 const PACK_SIZE = 4;
 
@@ -28,7 +29,8 @@ const FAILS_TO_REVIEW = 4;          // nach 4x falsch im Learn -> Review-Contain
 const TESTC_FAILS_BEFORE_TELL = 3;  // nach 3 Fehlversuchen im Test C sagt System das Wort
 const AUTO_ADVANCE_MS = 650;
 
-const IMAGE_DIR = `/assets/images/${LESSON_ID}/`; // => /assets/images/W1D1/
+const IMAGE_DIR_ABS = `/assets/images/${LESSON_ID}/`;  // bevorzugt
+const IMAGE_DIR_REL = `assets/images/${LESSON_ID}/`;   // Fallback (falls dein Setup ohne führendes / arbeitet)
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -37,44 +39,48 @@ const status = (msg) => {
   console.log("[STATUS]", msg);
 };
 
-// ----------------- FESTE 12 ITEMS (Reihenfolge später hier ändern) -----------------
+// ----------------- FESTE 12 ITEMS (Bilder bleiben w01..w12) -----------------
+// Du kannst später nur diese 12 Wörter/Reihenfolge ändern.
 const FIXED_ITEMS = [
-  { id: "w01_ich",       word: "ich",       translation: "", img: IMAGE_DIR + "w01_ich.png",       fallbackImg: "" },
-  { id: "w02_sie",       word: "Sie",       translation: "", img: IMAGE_DIR + "w02_sie.png",       fallbackImg: "" },
-  { id: "w03_buch",      word: "Buch",      translation: "", img: IMAGE_DIR + "w03_buch.png",      fallbackImg: "" },
-  { id: "w04_heft",      word: "Heft",      translation: "", img: IMAGE_DIR + "w04_heft.png",      fallbackImg: "" },
-  { id: "w05_stift",     word: "Stift",     translation: "", img: IMAGE_DIR + "w05_stift.png",     fallbackImg: "" },
-  { id: "w06_tisch",     word: "Tisch",     translation: "", img: IMAGE_DIR + "w06_tisch.png",     fallbackImg: "" },
-  { id: "w07_stuhl",     word: "Stuhl",     translation: "", img: IMAGE_DIR + "w07_stuhl.png",     fallbackImg: "" },
-  { id: "w08_tuer",      word: "Tür",       translation: "", img: IMAGE_DIR + "w08_tuer.png",      fallbackImg: "" },
-  { id: "w09_hoeren",    word: "hören",     translation: "", img: IMAGE_DIR + "w09_hoeren.png",    fallbackImg: "" },
-  { id: "w10_sprechen",  word: "sprechen",  translation: "", img: IMAGE_DIR + "w10_sprechen.png",  fallbackImg: "" },
-  { id: "w11_oeffnen",   word: "öffnen",    translation: "", img: IMAGE_DIR + "w11_oeffnen.png",   fallbackImg: "" },
-  { id: "w12_schreiben", word: "schreiben", translation: "", img: IMAGE_DIR + "w12_schreiben.png", fallbackImg: "" }
+  // Dateiname bleibt, Wort ist FR
+  { id: "w01_ich",       word: "je",       img: IMAGE_DIR_ABS + "w01_ich.png",       fallbackImg: IMAGE_DIR_REL + "w01_ich.png" },
+  { id: "w02_sie",       word: "vous",     img: IMAGE_DIR_ABS + "w02_sie.png",       fallbackImg: IMAGE_DIR_REL + "w02_sie.png" },
+  { id: "w03_buch",      word: "le livre", img: IMAGE_DIR_ABS + "w03_buch.png",      fallbackImg: IMAGE_DIR_REL + "w03_buch.png" },
+  { id: "w04_heft",      word: "le cahier",img: IMAGE_DIR_ABS + "w04_heft.png",      fallbackImg: IMAGE_DIR_REL + "w04_heft.png" },
+  { id: "w05_stift",     word: "le stylo", img: IMAGE_DIR_ABS + "w05_stift.png",     fallbackImg: IMAGE_DIR_REL + "w05_stift.png" },
+  { id: "w06_tisch",     word: "la table", img: IMAGE_DIR_ABS + "w06_tisch.png",     fallbackImg: IMAGE_DIR_REL + "w06_tisch.png" },
+  { id: "w07_stuhl",     word: "la chaise",img: IMAGE_DIR_ABS + "w07_stuhl.png",     fallbackImg: IMAGE_DIR_REL + "w07_stuhl.png" },
+  { id: "w08_tuer",      word: "la porte", img: IMAGE_DIR_ABS + "w08_tuer.png",      fallbackImg: IMAGE_DIR_REL + "w08_tuer.png" },
+  { id: "w09_hoeren",    word: "écouter",  img: IMAGE_DIR_ABS + "w09_hoeren.png",    fallbackImg: IMAGE_DIR_REL + "w09_hoeren.png" },
+  { id: "w10_sprechen",  word: "parler",   img: IMAGE_DIR_ABS + "w10_sprechen.png",  fallbackImg: IMAGE_DIR_REL + "w10_sprechen.png" },
+  { id: "w11_oeffnen",   word: "ouvrir",   img: IMAGE_DIR_ABS + "w11_oeffnen.png",   fallbackImg: IMAGE_DIR_REL + "w11_oeffnen.png" },
+  { id: "w12_schreiben", word: "écrire",   img: IMAGE_DIR_ABS + "w12_schreiben.png", fallbackImg: IMAGE_DIR_REL + "w12_schreiben.png" }
 ];
 
-// ----------------- Satzliste (Phase nach den 3 Tests) -----------------
+const ITEM_BY_ID = new Map(FIXED_ITEMS.map(x => [x.id, x]));
+
+// ----------------- Satzliste (Satz + passendes Bild) -----------------
 const SENTENCES = [
-  { id: "s01", text: "Ich höre." },
-  { id: "s02", text: "Ich spreche." },
-  { id: "s03", text: "Ich schreibe." },
-  { id: "s04", text: "Ich öffne die Tür." },
-  { id: "s05", text: "Ich öffne das Buch." },
-  { id: "s06", text: "Ich öffne das Heft." },
-  { id: "s07", text: "Ich schreibe im Heft." },
-  { id: "s08", text: "Ich schreibe ins Heft." },
-  { id: "s09", text: "Ich schreibe mit dem Stift." },
-  { id: "s10", text: "Das Buch ist da." },
-  { id: "s11", text: "Das Heft ist da." },
-  { id: "s12", text: "Der Stift ist da." },
-  { id: "s13", text: "Der Tisch ist da." },
-  { id: "s14", text: "Der Stuhl ist da." },
-  { id: "s15", text: "Die Tür ist da." },
-  { id: "s16", text: "Sie hören." },
-  { id: "s17", text: "Sie sprechen." },
-  { id: "s18", text: "Sie schreiben." },
-  { id: "s19", text: "Öffnen Sie die Tür." },
-  { id: "s20", text: "Öffnen Sie das Buch." }
+  { id: "s01", text: "J'écoute.",               imgId: "w09_hoeren" },
+  { id: "s02", text: "Je parle.",               imgId: "w10_sprechen" },
+  { id: "s03", text: "J'écris.",                imgId: "w12_schreiben" },
+  { id: "s04", text: "J'ouvre la porte.",       imgId: "w08_tuer" },
+  { id: "s05", text: "J'ouvre le livre.",       imgId: "w03_buch" },
+  { id: "s06", text: "J'ouvre le cahier.",      imgId: "w04_heft" },
+  { id: "s07", text: "J'écris dans le cahier.", imgId: "w04_heft" },
+  { id: "s08", text: "J'écris dans le cahier.", imgId: "w04_heft" },
+  { id: "s09", text: "J'écris avec le stylo.",  imgId: "w05_stift" },
+  { id: "s10", text: "Le livre est là.",        imgId: "w03_buch" },
+  { id: "s11", text: "Le cahier est là.",       imgId: "w04_heft" },
+  { id: "s12", text: "Le stylo est là.",        imgId: "w05_stift" },
+  { id: "s13", text: "La table est là.",        imgId: "w06_tisch" },
+  { id: "s14", text: "La chaise est là.",       imgId: "w07_stuhl" },
+  { id: "s15", text: "La porte est là.",        imgId: "w08_tuer" },
+  { id: "s16", text: "Vous écoutez.",           imgId: "w09_hoeren" },
+  { id: "s17", text: "Vous parlez.",            imgId: "w10_sprechen" },
+  { id: "s18", text: "Vous écrivez.",           imgId: "w12_schreiben" },
+  { id: "s19", text: "Ouvrez la porte.",        imgId: "w08_tuer" },
+  { id: "s20", text: "Ouvrez le livre.",        imgId: "w03_buch" }
 ];
 
 // ----------------- GLOBAL STATE -----------------
@@ -287,31 +293,23 @@ function stopBrowserASR() {
   });
 }
 
-// ----------------- Scoring -----------------
-const ARTICLES = new Set([
-  "der","die","das","den","dem","des",
-  "ein","eine","einen","einem","einer","eines",
-  "le","la","les","un","une","des","du","de","d","l"
-]);
+// ----------------- Scoring (FR) -----------------
+const ARTICLES = new Set(["le","la","les","un","une","des","du","de","d","l"]);
 
-const VERB_LEMMA = {
-  // hören
-  "hore":"hoeren", "hoere":"hoeren", "hoeren":"hoeren",
-  // sprechen
-  "spreche":"sprechen", "sprechen":"sprechen",
-  // schreiben
-  "schreibe":"schreiben", "schreiben":"schreiben",
-  // öffnen
-  "oeffne":"oeffnen", "oeffnen":"oeffnen"
+const FR_VERB_LEMMA = {
+  // écouter
+  ecoute: "ecouter", ecoutes: "ecouter", ecoutez: "ecouter", ecouter: "ecouter",
+  // parler
+  parle: "parler", parles: "parler", parlez: "parler", parler: "parler",
+  // écrire
+  ecris: "ecrire", ecrit: "ecrire", ecrivez: "ecrire", ecrire: "ecrire",
+  // ouvrir
+  ouvre: "ouvrir", ouvres: "ouvrir", ouvrez: "ouvrir", ouvrir: "ouvrir"
 };
 
 function _norm(s) {
   return String(s || "")
     .toLowerCase()
-    .replaceAll("ß", "ss")
-    .replaceAll("ä", "ae")
-    .replaceAll("ö", "oe")
-    .replaceAll("ü", "ue")
     .normalize("NFD")
     .replace(/\p{Diacritic}/gu, "")
     .replace(/[’']/g, " ")
@@ -324,22 +322,26 @@ function canonicalForScoring(s) {
   let x = _norm(s);
   if (!x) return "";
 
-  // Kontraktionen vereinheitlichen (wenn ASR sie ausschreibt)
-  x = (` ${x} `)
-    .replace(/ in dem /g, " im ")
-    .replace(/ in das /g, " ins ")
-    .replace(/ zu dem /g, " zum ")
-    .replace(/ zu der /g, " zur ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // j' -> je
+  x = (` ${x} `).replace(/\bj\b/g, "je").replace(/\s+/g, " ").trim();
 
-  const toks = x.split(" ").filter(Boolean).filter(t => !ARTICLES.has(t));
-  if (!toks.length) return "";
+  const toks = x.split(" ").filter(Boolean);
 
-  // lemmatisiere grob nur das erste Verb-Token
-  toks[0] = VERB_LEMMA[toks[0]] || toks[0];
+  // Artikel raus
+  const toks2 = toks.filter(t => !ARTICLES.has(t));
+  if (!toks2.length) return "";
 
-  return toks.join(" ").trim();
+  // Verb position: entweder 1. Token (Imperativ) oder 2. Token (je/vous + Verb)
+  const subj = toks2[0];
+  const hasSubj = ["je","tu","vous","nous","il","elle","on","ils","elles"].includes(subj);
+
+  if (hasSubj && toks2.length >= 2) {
+    toks2[1] = FR_VERB_LEMMA[toks2[1]] || toks2[1];
+  } else {
+    toks2[0] = FR_VERB_LEMMA[toks2[0]] || toks2[0];
+  }
+
+  return toks2.join(" ").trim();
 }
 
 function _levenshtein(a, b) {
@@ -468,7 +470,6 @@ function completeCurrentPack() {
   clearAdvanceTimer();
 
   if (mode === "review") {
-    // Aus Review raus, wenn in Test C 2× korrekt gesprochen
     for (const it of currentPack) {
       const c = testC_correct.get(it.id) || 0;
       if (c >= 2) reviewSet.delete(it.id);
@@ -506,6 +507,7 @@ function startSentenceMode() {
   render();
 }
 
+// ----------------- RENDER ROUTER -----------------
 function render() {
   if (!appEl) return;
 
@@ -517,7 +519,7 @@ function render() {
   if (mode === "sentences") return renderSentence();
 }
 
-// ----------------- LEARN -----------------
+// ----------------- LEARN (WORT) -----------------
 function renderLearnWord() {
   clearAdvanceTimer();
   stopAllAudioStates();
@@ -548,7 +550,6 @@ function renderLearnWord() {
       <div class="card card-word">
         <img src="${it.img}" data-fallback="${escapeHtml(it.fallbackImg || "")}" alt="${escapeHtml(it.word)}" class="word-image">
         <div class="word-text">${escapeHtml(it.word)}</div>
-        <div class="word-translation">${escapeHtml(it.translation || "")}</div>
       </div>
 
       <div class="controls-audio">
@@ -941,7 +942,7 @@ function renderTestC() {
           testC_failStreak = 0;
 
           setFeedback("testC-feedback", "Lernhilfe: Hör nochmal zu. (Dieses Wort kommt später nochmal.)", "bad");
-          await sleep(300);
+          await sleep(250);
           speakWord(target.word, 0.7);
 
           clearAdvanceTimer();
@@ -960,7 +961,7 @@ function renderTestC() {
   };
 }
 
-// ----------------- SENTENCE PHASE -----------------
+// ----------------- SENTENCE PHASE (mit Bild) -----------------
 function currentSentenceObj() {
   if (sentenceMode === "main") return SENTENCES[sentenceIndex] || null;
   return sentenceReviewQueue[sentenceIndex] || null;
@@ -970,7 +971,6 @@ function renderSentence() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
-  // Queue bauen / wechseln
   if (sentenceMode === "main") {
     if (sentenceIndex >= SENTENCES.length) {
       if (sentenceReviewSet.size > 0) {
@@ -984,7 +984,6 @@ function renderSentence() {
       }
     }
   } else {
-    // review
     if (sentenceIndex >= sentenceReviewQueue.length) {
       if (sentenceReviewSet.size > 0) {
         sentenceReviewQueue = Array.from(sentenceReviewSet).map(id => SENTENCES.find(s => s.id === id)).filter(Boolean);
@@ -1003,9 +1002,12 @@ function renderSentence() {
     return render();
   }
 
-  const totalMain = SENTENCES.length;
+  const imgItem = ITEM_BY_ID.get(sObj.imgId);
+  const imgSrc = imgItem?.img || "";
+  const imgFallback = imgItem?.fallbackImg || "";
+
   const progressLabel = sentenceMode === "main"
-    ? `Satz ${sentenceIndex + 1} von ${totalMain}`
+    ? `Satz ${sentenceIndex + 1} von ${SENTENCES.length}`
     : `Wiederholung ${sentenceIndex + 1} von ${Math.max(1, sentenceReviewQueue.length)}`;
 
   appEl.innerHTML = `
@@ -1019,6 +1021,7 @@ function renderSentence() {
       <h1>Satz nachsprechen</h1>
 
       <div class="card card-word" style="text-align:center;">
+        ${imgSrc ? `<img src="${imgSrc}" data-fallback="${escapeHtml(imgFallback)}" alt="" class="word-image">` : ""}
         <div class="word-text" style="font-size:28px; line-height:1.25;">${escapeHtml(sObj.text)}</div>
       </div>
 
@@ -1038,6 +1041,8 @@ function renderSentence() {
       </div>
     </div>
   `;
+
+  attachImgFallbacks();
 
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
@@ -1094,9 +1099,7 @@ function renderSentence() {
         refreshLocks();
 
         if (res.pass) {
-          // Satz ist geschafft -> aus Review entfernen
           sentenceReviewSet.delete(sObj.id);
-
           setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Weiter!`, "ok");
           sentenceFailCount = 0;
 
@@ -1105,7 +1108,6 @@ function renderSentence() {
           return;
         }
 
-        // nicht bestanden
         sentenceFailCount++;
         setFeedback("sent-feedback", `Aussprache: ${res.overall}% · Erkannt: „${recognizedText || "(leer)"}“ · Nochmal.`, "bad");
 
@@ -1138,19 +1140,11 @@ function renderEndScreen() {
   clearAdvanceTimer();
   stopAllAudioStates();
 
-  const reviewLeftWords = Array.from(reviewSet).length;
-  const reviewLeftSents = sentenceReviewSet.size;
-
   appEl.innerHTML = `
     <div class="screen screen-end">
       <h1>Fertig</h1>
-      <p>Wörter + Tests + Sätze abgeschlossen.</p>
-      <p>Offene Wort-Wiederholungen: <strong>${reviewLeftWords}</strong></p>
-      <p>Offene Satz-Wiederholungen: <strong>${reviewLeftSents}</strong></p>
-
-      <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin-top:14px;">
-        <button id="btn-repeat" class="btn primary">Nochmal starten</button>
-      </div>
+      <p>Wörter + 3 Tests + Sätze abgeschlossen.</p>
+      <button id="btn-repeat" class="btn primary">Nochmal starten</button>
     </div>
   `;
 
