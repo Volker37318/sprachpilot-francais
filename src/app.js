@@ -1146,15 +1146,3 @@ function renderEnd() {
     render();
   };
 }
-
-
-
-
-
-
-
-
-
-
-
-
