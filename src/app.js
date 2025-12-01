@@ -1,6 +1,8 @@
 // src/app.js – FIXED 12 Bilder (w01..w12) + 80% + Container + 3 Tests + Satzphase
-// Repariert: Aufnahme/ASR wieder stabil wie im funktionierenden Code (SpeechRecognition + AutoStop).
-// Wichtig: Bilder liegen unter /assets/images/W1D1/w01_ich.png ... w12_schreiben.png
+// Fixes gegen Frust:
+// 1) Scoring ist tolerant gegen Wiederholungen/Extra-Wörter (z.B. "je je je" => 100% für Ziel "je")
+// 2) Test C: Nach 3 Fehlversuchen erscheint Button "Weiter & später nochmal" (deferred Queue)
+// 3) Aufnahme-Flow bleibt stabil: SpeechRecognition + Auto-Stop (kein Freeze bei "Sprich jetzt...")
 
 const LESSON_ID = "W1D1";
 
@@ -13,8 +15,7 @@ const PACK_SIZE = 4;
 const PASS_THRESHOLD = 80;
 const FAILS_TO_CONTAINER = 4;
 const TEST_NEED_EACH = 2;      // pro Bild 2x korrekt
-const TESTC_HINT_AFTER = 3;    // nach 3 Fehlversuchen sagt das System das Wort
-
+const TESTC_DEFER_AFTER = 3;   // nach 3 Fehlversuchen: Button "Weiter & später nochmal"
 const AUTO_STOP_MS = 3800;
 
 const IMAGE_DIR_REL = `/assets/images/${LESSON_ID}/`;
@@ -51,10 +52,11 @@ let packIndex = 0;  // 0..2
 let cursor = 0;     // Position in current learning list
 let currentList = [];      // Lernliste (zuerst pack items in order)
 let container = [];        // ids, die später nochmal kommen
-let failCount = {};        // pro id
+let failCount = {};        // pro id (learn/review)
 let testCounts = {};       // pro id: 0..2
 let testTargetId = null;   // aktuelles Ziel
 let testC_failStreak = {}; // pro id: Fehlserie
+let testC_deferred = new Set(); // pro id: "später nochmal" innerhalb Test C
 
 // Locks
 let ttsSupported = "speechSynthesis" in window;
@@ -103,7 +105,9 @@ function resetPackState() {
   failCount = {};
   testCounts = {};
   testC_failStreak = {};
+  testC_deferred = new Set();
   testTargetId = null;
+
   for (const it of pack) {
     failCount[it.id] = 0;
     testCounts[it.id] = 0;
@@ -174,7 +178,7 @@ function stopAllAudioStates() {
   refreshLocks();
 }
 
-// ---------- Browser SpeechRecognition (STABIL, wie vorher) ----------
+// ---------- Browser SpeechRecognition (stabil) ----------
 let _sr = null;
 let _srFinal = "";
 let _srInterim = "";
@@ -243,7 +247,7 @@ function stopBrowserASR() {
   });
 }
 
-// ---------- SCORING (robust, ohne kaputte Extras) ----------
+// ---------- SCORING (Anti-Frust: tolerant gegen Wiederholungen/Extra) ----------
 const ARTICLES = new Set(["le","la","les","un","une","des","du","de","d","l"]);
 
 const FR_LEMMA = {
@@ -253,7 +257,7 @@ const FR_LEMMA = {
   // Nomen
   livre: "livre", cahier: "cahier", stylo: "stylo", table: "table", chaise: "chaise", porte: "porte",
 
-  // Verben (Häufige Formen)
+  // Verben & Formen
   ecouter: "ecouter", ecoute: "ecouter", ecoutes: "ecouter", ecoutez: "ecouter",
   parler: "parler", parle: "parler", parles: "parler", parlez: "parler",
   ouvrir: "ouvrir", ouvre: "ouvrir", ouvres: "ouvrir", ouvrez: "ouvrir",
@@ -272,9 +276,21 @@ function _norm(s) {
 }
 
 function canonicalFrenchForScoring(s) {
-  const toks = _norm(s).split(" ").filter(Boolean).filter(t => !ARTICLES.has(t));
+  const toks = _norm(s)
+    .split(" ")
+    .filter(Boolean)
+    .filter(t => !ARTICLES.has(t));
+
   if (!toks.length) return "";
   return toks.map(t => FR_LEMMA[t] || t).join(" ").trim();
+}
+
+function collapseAdjacentDuplicates(tokens) {
+  const out = [];
+  for (const t of tokens) {
+    if (!out.length || out[out.length - 1] !== t) out.push(t);
+  }
+  return out;
 }
 
 function _levenshtein(a, b) {
@@ -314,10 +330,34 @@ function scoreSpeech(target, heard) {
 
   if (!tCan || !hCan) return { overall: 0, pass: false };
 
-  if (tCan === hCan) return { overall: 100, pass: true };
+  let tTokens = tCan.split(" ").filter(Boolean);
+  let hTokens = collapseAdjacentDuplicates(hCan.split(" ").filter(Boolean));
 
-  const sim = _charSimilarity(tCan, hCan);
-  const overall = Math.max(0, Math.min(100, Math.round(sim * 100)));
+  // 1-Wort-Ziele: bestes Token zählt (damit "je je je" nicht bestraft wird)
+  if (tTokens.length === 1) {
+    let best = 0;
+
+    for (const ht of hTokens) {
+      if (ht === tCan) { best = 1; break; }
+      best = Math.max(best, _charSimilarity(tCan, ht));
+    }
+
+    // Extra-Boost: wenn Zielwort irgendwo als Token vorkommt -> 100
+    if (hTokens.includes(tCan)) best = 1;
+
+    const overall = Math.round(best * 100);
+    return { overall, pass: overall >= PASS_THRESHOLD };
+  }
+
+  // Mehrwort-Ziele: wenn alle Ziel-Tokens enthalten sind -> 100 (tolerant gegen Zusatzwörter)
+  const setH = new Set(hTokens);
+  const coverageCount = tTokens.reduce((acc, t) => acc + (setH.has(t) ? 1 : 0), 0);
+  const coverage = coverageCount / (tTokens.length || 1);
+  if (coverage >= 1) return { overall: 100, pass: true };
+
+  const cs = _charSimilarity(tCan, hCan);
+  // Zusatz tolerant: Coverage wichtiger als Levenshtein
+  const overall = Math.round(((0.55 * cs) + (0.45 * coverage)) * 100);
   return { overall, pass: overall >= PASS_THRESHOLD };
 }
 
@@ -333,11 +373,9 @@ function allCountsReached2() {
   return getPackItems().every(it => (testCounts[it.id] || 0) >= TEST_NEED_EACH);
 }
 
-function pickNextTargetId() {
-  const pack = getPackItems();
-  const remaining = pack.filter(it => (testCounts[it.id] || 0) < TEST_NEED_EACH);
-  if (!remaining.length) return null;
-  return remaining[Math.floor(Math.random() * remaining.length)].id;
+function pickNextTargetIdFrom(list) {
+  if (!list.length) return null;
+  return list[Math.floor(Math.random() * list.length)].id;
 }
 
 function nextPackOrSentences() {
@@ -366,15 +404,14 @@ function render() {
 
 // ---------- PHASE learn ----------
 function renderLearn() {
-  const pack = getPackItems();
   if (cursor >= currentList.length) {
-    // nach 4 Wörtern: Container nochmal oder Test A
+    // nach Pack: Container nochmal oder Test A
     if (container.length) {
       mode = "review";
       currentList = container.map(id => ID2ITEM[id]).filter(Boolean);
       container = [];
       cursor = 0;
-      // Failcounter in review NICHT resetten (kannst du später entscheiden) -> wir resetten jetzt sanft:
+      // in Review starten wir Failcount für diese Runde neu, sonst frustig
       for (const it of currentList) failCount[it.id] = 0;
       return render();
     }
@@ -448,7 +485,6 @@ function renderLearn() {
       return;
     }
 
-    // Start
     setFeedback("fb", "Sprich jetzt…", null);
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
@@ -464,7 +500,6 @@ function renderLearn() {
     micRecording = true;
     refreshLocks();
 
-    // Hard stop (damit es NIE hängen bleibt)
     try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
     autoStopTimer = setTimeout(async () => {
       try {
@@ -481,7 +516,7 @@ function renderLearn() {
         const res = scoreSpeech(it.word, heard);
         if (res.pass) {
           setFeedback("fb", `Aussprache: ${res.overall}% · Erkannt: „${heard}“ · Weiter!`, "ok");
-          await sleep(450);
+          await sleep(420);
           cursor++;
           renderLearn();
           return;
@@ -492,7 +527,7 @@ function renderLearn() {
 
         if (f >= FAILS_TO_CONTAINER) {
           addToContainer(it.id);
-          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · In den Container.`, "bad");
+          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Kommt später nochmal.`, "bad");
           await sleep(650);
           cursor++;
           renderLearn();
@@ -510,7 +545,7 @@ function renderLearn() {
   };
 }
 
-// ---------- PHASE review (Container) ----------
+// ---------- PHASE review ----------
 function renderReview() {
   if (cursor >= currentList.length) {
     mode = "testA";
@@ -518,7 +553,6 @@ function renderReview() {
     return render();
   }
 
-  // re-use learn UI, aber Badge "Container"
   const it = currentList[cursor];
 
   appEl.innerHTML = `
@@ -627,14 +661,16 @@ function renderTestA() {
   const pack = getPackItems();
 
   if (allCountsReached2()) {
-    // Reset counts für Test B
     for (const it of pack) testCounts[it.id] = 0;
     testTargetId = null;
     mode = "testB";
     return render();
   }
 
-  if (!testTargetId) testTargetId = pickNextTargetId();
+  if (!testTargetId) {
+    const remaining = pack.filter(it => (testCounts[it.id] || 0) < TEST_NEED_EACH);
+    testTargetId = pickNextTargetIdFrom(remaining);
+  }
   const target = ID2ITEM[testTargetId];
   const grid = shuffleArray(pack);
 
@@ -699,7 +735,7 @@ function renderTestA() {
         testCounts[id] = (testCounts[id] || 0) + 1;
         setFeedback("fb", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
         testTargetId = null;
-        await sleep(350);
+        await sleep(300);
         renderTestA();
       } else {
         setFeedback("fb", "Falsch. Nicht gezählt – probier nochmal.", "bad");
@@ -713,14 +749,17 @@ function renderTestB() {
   const pack = getPackItems();
 
   if (allCountsReached2()) {
-    // Reset counts für Test C
     for (const it of pack) { testCounts[it.id] = 0; testC_failStreak[it.id] = 0; }
+    testC_deferred = new Set();
     testTargetId = null;
     mode = "testC";
     return render();
   }
 
-  if (!testTargetId) testTargetId = pickNextTargetId();
+  if (!testTargetId) {
+    const remaining = pack.filter(it => (testCounts[it.id] || 0) < TEST_NEED_EACH);
+    testTargetId = pickNextTargetIdFrom(remaining);
+  }
   const target = ID2ITEM[testTargetId];
   const grid = shuffleArray(pack);
 
@@ -781,7 +820,7 @@ function renderTestB() {
         testCounts[id] = (testCounts[id] || 0) + 1;
         setFeedback("fb", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
         testTargetId = null;
-        await sleep(350);
+        await sleep(300);
         renderTestB();
       } else {
         setFeedback("fb", "Falsch. Nicht gezählt – probier nochmal.", "bad");
@@ -798,10 +837,19 @@ function renderTestC() {
     return nextPackOrSentences();
   }
 
-  if (!testTargetId) testTargetId = pickNextTargetId();
+  // Zielauswahl: erst nicht-deferred, dann deferred
+  if (!testTargetId) {
+    const remaining = pack.filter(it => (testCounts[it.id] || 0) < TEST_NEED_EACH);
+    if (!remaining.length) return nextPackOrSentences();
+
+    const nonDeferred = remaining.filter(it => !testC_deferred.has(it.id));
+    const pool = nonDeferred.length ? nonDeferred : remaining;
+    testTargetId = pickNextTargetIdFrom(pool);
+  }
+
   const target = ID2ITEM[testTargetId];
   const streak = testC_failStreak[target.id] || 0;
-  const hintUnlocked = streak >= TESTC_HINT_AFTER;
+  const showDefer = streak >= TESTC_DEFER_AFTER;
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
@@ -819,12 +867,15 @@ function renderTestC() {
       </div>
 
       <div class="controls-audio">
-        <button id="btn-hear" class="btn secondary" ${hintUnlocked ? "" : "disabled"}>Hören</button>
-        <button id="btn-hear-slow" class="btn secondary" ${hintUnlocked ? "" : "disabled"}>Langsam</button>
+        <button id="btn-hear" class="btn secondary" ${showDefer ? "" : "disabled"}>Hören</button>
+        <button id="btn-hear-slow" class="btn secondary" ${showDefer ? "" : "disabled"}>Langsam</button>
       </div>
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
+        <button id="btn-defer" class="btn secondary" style="display:${showDefer ? "inline-block" : "none"};">
+          Weiter & später nochmal
+        </button>
         <div id="fb" class="feedback" style="flex-basis:100%;"></div>
       </div>
 
@@ -839,18 +890,32 @@ function renderTestC() {
   const btnHear = document.getElementById("btn-hear");
   const btnHearSlow = document.getElementById("btn-hear-slow");
   const btnSpeak = document.getElementById("btn-speak");
+  const btnDefer = document.getElementById("btn-defer");
 
   const refresh = () => {
     const lock = micRecording || ttsActive;
     btnSpeak.disabled = lock;
-    btnHear.disabled = lock || !hintUnlocked;
-    btnHearSlow.disabled = lock || !hintUnlocked;
+    btnHear.disabled = lock || !showDefer;
+    btnHearSlow.disabled = lock || !showDefer;
+    if (btnDefer) btnDefer.disabled = lock || !showDefer;
   };
   setUiRefreshLocks(refresh);
   refresh();
 
   btnHear.onclick = () => speakWord(target.word, 1.0);
   btnHearSlow.onclick = () => speakWord(target.word, 0.7);
+
+  if (btnDefer) {
+    btnDefer.onclick = async () => {
+      // dieses Bild später in Test C
+      testC_deferred.add(target.id);
+      testC_failStreak[target.id] = 0; // Frust-Reset
+      testTargetId = null;
+      setFeedback("fb", "Okay – dieses Bild kommt später nochmal.", "bad");
+      await sleep(350);
+      renderTestC();
+    };
+  }
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
@@ -891,6 +956,7 @@ function renderTestC() {
         if (res.pass) {
           testCounts[target.id] = (testCounts[target.id] || 0) + 1;
           testC_failStreak[target.id] = 0;
+          testC_deferred.delete(target.id);
           setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Gezählt! (${testCounts[target.id]}/${TEST_NEED_EACH})`, "ok");
           testTargetId = null;
           await sleep(500);
@@ -899,11 +965,12 @@ function renderTestC() {
           testC_failStreak[target.id] = (testC_failStreak[target.id] || 0) + 1;
           const n = testC_failStreak[target.id];
 
-          if (n >= TESTC_HINT_AFTER) {
-            setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Hilfe: Ich sage das Wort.`, "bad");
+          // Ab 3 Fehlversuchen: Button sichtbar + System sagt das Wort (Lernhilfe)
+          if (n >= TESTC_DEFER_AFTER) {
+            setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Hilfe: Ich sage das Wort (oder nutze „Weiter & später nochmal“).`, "bad");
             speakWord(target.word, 1.0);
           } else {
-            setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Nochmal (${n}/${TESTC_HINT_AFTER}).`, "bad");
+            setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Nochmal (${n}/${TESTC_DEFER_AFTER}).`, "bad");
           }
         }
       } catch (e) {
@@ -1073,6 +1140,8 @@ function renderEnd() {
     render();
   };
 }
+
+
 
 
 
