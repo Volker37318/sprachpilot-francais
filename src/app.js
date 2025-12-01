@@ -1,13 +1,10 @@
-// src/app.js – Vor-A1 Training (FIXED 12 Bilder) + 80% + Container + 3 Tests + Satzphase
-// Bilder bleiben fest (w01..w12). Später musst du nur "word" (und Reihenfolge) ändern.
+// src/app.js – FIXED 12 Bilder (w01..w12) + 80% + Container + 3 Tests + Satzphase
+// Repariert: Aufnahme/ASR wieder stabil wie im funktionierenden Code (SpeechRecognition + AutoStop).
+// Wichtig: Bilder liegen unter /assets/images/W1D1/w01_ich.png ... w12_schreiben.png
 
 const LESSON_ID = "W1D1";
 
-// Pfad zu deinen Bildern: /assets/images/W1D1/w01_ich.png ...
-const IMAGE_DIR_REL = `/assets/images/${LESSON_ID}/`;
-const IMAGE_DIR_ABS = `${location.origin}${IMAGE_DIR_REL}`;
-
-// Training ist Französisch (TTS + ASR)
+// Training: Französisch
 const ASR_LANG = "fr-FR";
 const TTS_LANG_PREFIX = "fr";
 
@@ -15,15 +12,13 @@ const TTS_LANG_PREFIX = "fr";
 const PACK_SIZE = 4;
 const PASS_THRESHOLD = 80;
 const FAILS_TO_CONTAINER = 4;
-const TEST_NEED_EACH = 2;
-const TESTC_MAX_FAILS_BEFORE_HINT = 3;
+const TEST_NEED_EACH = 2;      // pro Bild 2x korrekt
+const TESTC_HINT_AFTER = 3;    // nach 3 Fehlversuchen sagt das System das Wort
 
-// Whisper Endpoint (Fallback). Wenn du eine andere URL hast:
-// localStorage.setItem("sp_whisper_url","https://.../whisper")
-const WHISPER_URL =
-  (window.WHISPER_URL) ||
-  localStorage.getItem("sp_whisper_url") ||
-  "https://whisper-proxy-w.onrender.com/whisper";
+const AUTO_STOP_MS = 3800;
+
+const IMAGE_DIR_REL = `/assets/images/${LESSON_ID}/`;
+const IMAGE_DIR_ABS = `${location.origin}${IMAGE_DIR_REL}`;
 
 const appEl = document.getElementById("app");
 const statusLine = document.getElementById("statusLine");
@@ -33,9 +28,7 @@ const status = (msg) => {
 };
 
 // ----------------- FESTE 12 ITEMS (Bilder bleiben w01..w12) -----------------
-// Du kannst später nur diese 12 Wörter/Reihenfolge ändern.
 const FIXED_ITEMS = [
-  // Dateiname bleibt, Wort ist FR
   { id: "w01_ich",       word: "je",        img: IMAGE_DIR_ABS + "w01_ich.png",       fallbackImg: IMAGE_DIR_REL + "w01_ich.png" },
   { id: "w02_sie",       word: "vous",      img: IMAGE_DIR_ABS + "w02_sie.png",       fallbackImg: IMAGE_DIR_REL + "w02_sie.png" },
   { id: "w03_buch",      word: "le livre",  img: IMAGE_DIR_ABS + "w03_buch.png",      fallbackImg: IMAGE_DIR_REL + "w03_buch.png" },
@@ -50,25 +43,25 @@ const FIXED_ITEMS = [
   { id: "w12_schreiben", word: "écrire",    img: IMAGE_DIR_ABS + "w12_schreiben.png", fallbackImg: IMAGE_DIR_REL + "w12_schreiben.png" }
 ];
 
+const ID2ITEM = Object.fromEntries(FIXED_ITEMS.map(x => [x.id, x]));
+
 // ---------- State ----------
 let mode = "learn"; // learn | review | testA | testB | testC | sentences | end
-let packIndex = 0;
-let learnCursor = 0;        // 0..PACK_SIZE-1 im aktuellen Pack (nur Grundrunde)
-let reviewOrder = [];       // Container-Reihenfolge fürs Review
-let reviewCursor = 0;
-
-let container = [];         // ids im aktuellen Pack, die später wiederkommen
-let failsById = {};         // fails pro Wort (für Container)
-
-let testCounts = {};        // pro id: wie oft korrekt (0..2)
-let testTargetId = null;    // aktuelles Ziel im Test
-let testC_failStreak = {};  // pro id: Fehlserie im TestC (für Hint nach 3)
+let packIndex = 0;  // 0..2
+let cursor = 0;     // Position in current learning list
+let currentList = [];      // Lernliste (zuerst pack items in order)
+let container = [];        // ids, die später nochmal kommen
+let failCount = {};        // pro id
+let testCounts = {};       // pro id: 0..2
+let testTargetId = null;   // aktuelles Ziel
+let testC_failStreak = {}; // pro id: Fehlserie
 
 // Locks
 let ttsSupported = "speechSynthesis" in window;
 let ttsVoice = null;
 let ttsActive = false;
 let micRecording = false;
+let autoStopTimer = null;
 
 let _uiRefreshLocks = null;
 function setUiRefreshLocks(fn) { _uiRefreshLocks = fn; }
@@ -76,6 +69,17 @@ function refreshLocks() { try { _uiRefreshLocks && _uiRefreshLocks(); } catch {}
 
 // ---------- Helpers ----------
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function escapeHtml(str) {
+  return String(str || "")
+    .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;").replaceAll("'", "&#039;");
+}
+function attachImgFallbacks() {
+  appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
+    const fb = img.getAttribute("data-fallback") || "";
+    img.onerror = () => { img.onerror = null; if (fb) img.src = fb; };
+  });
+}
 function shuffleArray(arr) {
   const a = [...arr];
   for (let i = a.length - 1; i > 0; i--) {
@@ -84,39 +88,32 @@ function shuffleArray(arr) {
   }
   return a;
 }
-function escapeHtml(str) {
-  return String(str || "")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-function attachImgFallbacks() {
-  appEl.querySelectorAll("img[data-fallback]").forEach((img) => {
-    const fb = img.getAttribute("data-fallback") || "";
-    img.onerror = () => {
-      img.onerror = null;
-      if (fb) img.src = fb;
-    };
-  });
-}
 function getPacksCount() { return Math.ceil(FIXED_ITEMS.length / PACK_SIZE); }
 function getPackItems(pi = packIndex) {
   const s = pi * PACK_SIZE;
   return FIXED_ITEMS.slice(s, s + PACK_SIZE);
 }
-function packLabel() {
-  return `Pack ${packIndex + 1} von ${getPacksCount()}`;
+function packLabel() { return `Pack ${packIndex + 1} von ${getPacksCount()}`; }
+
+function resetPackState() {
+  const pack = getPackItems();
+  currentList = [...pack];
+  cursor = 0;
+  container = [];
+  failCount = {};
+  testCounts = {};
+  testC_failStreak = {};
+  testTargetId = null;
+  for (const it of pack) {
+    failCount[it.id] = 0;
+    testCounts[it.id] = 0;
+    testC_failStreak[it.id] = 0;
+  }
 }
-function stopAllAudioStates() {
-  try { window.speechSynthesis?.cancel?.(); } catch {}
-  ttsActive = false;
-  micRecording = false;
-  refreshLocks();
-}
-function setFeedback(id, text, kind) {
-  const el = document.getElementById(id);
+
+// ---------- Feedback helper ----------
+function setFeedback(elId, text, kind) {
+  const el = document.getElementById(elId);
   if (!el) return;
   el.textContent = text || "";
   if (kind === "ok") { el.style.color = "#16a34a"; el.style.fontWeight = "900"; }
@@ -164,210 +161,103 @@ function speakWord(text, rate = 1.0) {
   }
 }
 
-// ---------- ASR (SpeechRecognition + gleichzeitige Aufnahme + Whisper Fallback) ----------
+// ---------- CLEANUP ----------
+function stopAllAudioStates() {
+  try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+  autoStopTimer = null;
+
+  try { window.speechSynthesis?.cancel?.(); } catch {}
+  ttsActive = false;
+
+  // SpeechRecognition stop handled separately
+  micRecording = false;
+  refreshLocks();
+}
+
+// ---------- Browser SpeechRecognition (STABIL, wie vorher) ----------
+let _sr = null;
+let _srFinal = "";
+let _srInterim = "";
+let _srResolve = null;
+
 function speechRecAvailable() {
   return !!(window.SpeechRecognition || window.webkitSpeechRecognition);
 }
-function pickSupportedMime() {
-  const cands = ["audio/webm;codecs=opus","audio/webm","audio/ogg;codecs=opus","audio/ogg"];
-  for (const m of cands) {
-    if (window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m)) return m;
-  }
-  return "";
-}
-async function blobToBase64(blob) {
-  const buf = await blob.arrayBuffer();
-  let binary = "";
-  const bytes = new Uint8Array(buf);
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
-}
-async function transcribeWhisper(blob, languageShort = "fr") {
-  // 1) multipart/form-data
-  try {
-    const fd = new FormData();
-    fd.append("file", blob, "speech.webm");
-    fd.append("language", languageShort);
 
-    const r = await fetch(WHISPER_URL, { method: "POST", body: fd });
-    const txt = await r.text();
-    let data = {};
-    try { data = JSON.parse(txt); } catch { data = {}; }
+function startBrowserASR(lang = "fr-FR") {
+  if (!speechRecAvailable()) return false;
 
-    if (!r.ok) throw new Error(data?.error || txt || `HTTP ${r.status}`);
-    const out = (data.text || data.transcript || data.result || "").trim();
-    if (out) return out;
-  } catch (e) {}
-
-  // 2) JSON base64 fallback
-  const b64 = await blobToBase64(blob);
-  const r2 = await fetch(WHISPER_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ audioBase64: b64, language: languageShort })
-  });
-  const data2 = await r2.json().catch(() => ({}));
-  if (!r2.ok) throw new Error(data2?.error || `HTTP ${r2.status}`);
-  return String(data2.text || data2.transcript || data2.result || "").trim();
-}
-
-async function listenSmart({ lang = ASR_LANG, maxMs = 4500, whisper = true } = {}) {
-  const languageShort = (lang || "fr").slice(0, 2).toLowerCase();
-
-  if (!window.MediaRecorder || !navigator.mediaDevices?.getUserMedia) {
-    // SR only fallback
-    if (!speechRecAvailable()) return { text: "", source: "none", error: "no_asr" };
-    return await listenSRonly(lang, maxMs);
-  }
-
-  let stream = null;
-  let recorder = null;
-  let chunks = [];
-  let srText = "";
-  let srError = "";
-
-  const mimeType = pickSupportedMime();
   const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let sr = null;
+  _srFinal = "";
+  _srInterim = "";
 
-  let resolveDone;
-  const done = new Promise(r => (resolveDone = r));
+  _sr = new SR();
+  _sr.lang = lang;
+  _sr.interimResults = true;
+  _sr.continuous = true;
+  _sr.maxAlternatives = 1;
 
-  const stopTracks = (s) => { try { s?.getTracks?.().forEach(t => t.stop()); } catch {} };
+  _sr.onresult = (e) => {
+    let interimAll = "";
+    let addFinal = "";
+    for (let i = e.resultIndex; i < e.results.length; i++) {
+      const r = e.results[i];
+      const t = (r && r[0] && r[0].transcript) ? r[0].transcript : "";
+      if (r.isFinal) addFinal += " " + t;
+      else interimAll += " " + t;
+    }
+    if (interimAll.trim()) _srInterim = interimAll.trim();
+    if (addFinal.trim()) _srFinal = (_srFinal + " " + addFinal).trim();
+  };
 
-  const finish = async () => {
-    try { if (sr) { try { sr.stop(); } catch {} } } catch {}
-    try { if (recorder && recorder.state !== "inactive") recorder.stop(); } catch {}
+  _sr.onerror = (e) => console.warn("[ASR] error:", e?.error || e);
+
+  _sr.onend = () => {
+    try {
+      if (_srResolve) {
+        const out = (_srFinal || _srInterim || "").trim();
+        _srResolve(out);
+        _srResolve = null;
+      }
+    } finally {
+      _sr = null;
+      _srInterim = "";
+    }
   };
 
   try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }
-    });
-
-    recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-    chunks = [];
-
-    recorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) chunks.push(e.data); };
-
-    recorder.onstop = async () => {
-      const blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
-      stopTracks(stream);
-
-      const cleaned = (srText || "").trim();
-      if (cleaned) return resolveDone({ text: cleaned, source: "browser", error: srError });
-
-      if (whisper) {
-        try {
-          const w = await transcribeWhisper(blob, languageShort);
-          return resolveDone({ text: (w || "").trim(), source: "whisper", error: srError });
-        } catch (e) {
-          return resolveDone({ text: "", source: "whisper_failed", error: String(e?.message || e) });
-        }
-      }
-      return resolveDone({ text: "", source: "empty", error: srError || "empty" });
-    };
-
-    recorder.start(200);
-
-    if (speechRecAvailable()) {
-      srText = "";
-      srError = "";
-      sr = new SR();
-      sr.lang = lang;
-      sr.interimResults = true;
-      sr.continuous = false;
-      sr.maxAlternatives = 1;
-
-      sr.onresult = (e) => {
-        let interimAll = "";
-        let addFinal = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const r = e.results[i];
-          const t = (r && r[0] && r[0].transcript) ? r[0].transcript : "";
-          if (r.isFinal) addFinal += " " + t;
-          else interimAll += " " + t;
-        }
-        if (interimAll.trim()) srText = interimAll.trim();
-        if (addFinal.trim()) srText = (srText + " " + addFinal).trim();
-        if (addFinal.trim()) finish();
-      };
-      sr.onerror = (e) => { srError = e?.error || "asr_error"; };
-
-      try { sr.start(); } catch { srError = "start_failed"; }
-    }
-
-    setTimeout(() => { finish(); }, maxMs);
-    return await done;
-
+    _sr.start();
+    return true;
   } catch (e) {
-    stopTracks(stream);
-    return { text: "", source: "getUserMedia_failed", error: String(e?.message || e) };
+    console.warn("[ASR] start failed:", e);
+    _sr = null;
+    return false;
   }
 }
 
-async function listenSRonly(lang, maxMs) {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  let sr = null;
-  let text = "";
-  let err = "";
-
-  return await new Promise((resolve) => {
-    const end = () => resolve({ text: (text || "").trim(), source: "sr_only", error: err });
-
-    try {
-      sr = new SR();
-      sr.lang = lang;
-      sr.interimResults = true;
-      sr.continuous = false;
-      sr.maxAlternatives = 1;
-
-      sr.onresult = (e) => {
-        let interimAll = "";
-        let addFinal = "";
-        for (let i = e.resultIndex; i < e.results.length; i++) {
-          const r = e.results[i];
-          const t = (r && r[0] && r[0].transcript) ? r[0].transcript : "";
-          if (r.isFinal) addFinal += " " + t;
-          else interimAll += " " + t;
-        }
-        text = (addFinal || interimAll || "").trim();
-        if (addFinal.trim()) { try { sr.stop(); } catch {} }
-      };
-      sr.onerror = (e) => { err = e?.error || "asr_error"; };
-      sr.onend = () => end();
-
-      sr.start();
-      setTimeout(() => { try { sr.stop(); } catch {} }, maxMs);
-    } catch {
-      resolve({ text: "", source: "sr_only_failed", error: "start_failed" });
-    }
+function stopBrowserASR() {
+  return new Promise((resolve) => {
+    if (!_sr) return resolve((_srFinal || _srInterim || "").trim());
+    _srResolve = resolve;
+    try { _sr.stop(); } catch { resolve((_srFinal || _srInterim || "").trim()); }
   });
 }
 
-// ---------- Scoring (robust: Artikel raus, Verbformen akzeptieren) ----------
+// ---------- SCORING (robust, ohne kaputte Extras) ----------
 const ARTICLES = new Set(["le","la","les","un","une","des","du","de","d","l"]);
+
 const FR_LEMMA = {
   // Pronomen
-  je: "je", j: "je",
-  vous: "vous", vou: "vous",
+  je: "je", j: "je", vous: "vous",
 
   // Nomen
-  livre: "livre",
-  cahier: "cahier",
-  stylo: "stylo",
-  table: "table",
-  chaise: "chaise",
-  porte: "porte",
+  livre: "livre", cahier: "cahier", stylo: "stylo", table: "table", chaise: "chaise", porte: "porte",
 
-  // Verben (Infinitiv + häufige Formen)
-  ecouter: "écouter", écouter: "écouter", ecoute: "écouter", écoute: "écouter", ecoutes: "écouter", écoutez: "écouter",
+  // Verben (Häufige Formen)
+  ecouter: "ecouter", ecoute: "ecouter", ecoutes: "ecouter", ecoutez: "ecouter",
   parler: "parler", parle: "parler", parles: "parler", parlez: "parler",
   ouvrir: "ouvrir", ouvre: "ouvrir", ouvres: "ouvrir", ouvrez: "ouvrir",
-  ecrire: "écrire", écrire: "écrire", ecris: "écrire", écris: "écrire", ecrit: "écrire", écrit: "écrire", écrivez: "écrire"
+  ecrire: "ecrire", ecris: "ecrire", ecrit: "ecrire", ecrivez: "ecrire"
 };
 
 function _norm(s) {
@@ -380,43 +270,36 @@ function _norm(s) {
     .replace(/\s+/g, " ")
     .trim();
 }
-function _tokensNoArticles(s) {
-  return _norm(s).split(" ").filter(Boolean).filter(t => !ARTICLES.has(t));
-}
-function canonicalFrench(s) {
-  const toks = _tokensNoArticles(s);
-  if (!toks.length) return "";
-  const out = toks.map(t => FR_LEMMA[t] || t);
 
-  // dedup wie "je je"
-  const dedup = [];
-  for (const t of out) {
-    if (dedup.length && dedup[dedup.length - 1] === t) continue;
-    dedup.push(t);
-  }
-  return dedup.join(" ").trim();
+function canonicalFrenchForScoring(s) {
+  const toks = _norm(s).split(" ").filter(Boolean).filter(t => !ARTICLES.has(t));
+  if (!toks.length) return "";
+  return toks.map(t => FR_LEMMA[t] || t).join(" ").trim();
 }
+
 function _levenshtein(a, b) {
   a = _norm(a); b = _norm(b);
   const m = a.length, n = b.length;
   if (!m) return n;
   if (!n) return m;
-  const dp = Array.from({ length: mn(m + 1) }, () => null);
-  function idx(i,j){ return i*(n+1)+j; }
-  for (let i=0;i<=m;i++) dp[idx(i,0)] = i;
-  for (let j=0;j<=n;j++) dp[idx(0,j)] = j;
-  for (let i=1;i<=m;i++){
-    for (let j=1;j<=n;j++){
-      const cost = a[i-1]===b[j-1] ? 0 : 1;
-      dp[idx(i,j)] = Math.min(
-        dp[idx(i-1,j)] + 1,
-        dp[idx(i,j-1)] + 1,
-        dp[idx(i-1,j-1)] + cost
+
+  const dp = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(
+        dp[i - 1][j] + 1,
+        dp[i][j - 1] + 1,
+        dp[i - 1][j - 1] + cost
       );
     }
   }
-  return dp[idx(m,n)];
+  return dp[m][n];
 }
+
 function _charSimilarity(target, heard) {
   const A = _norm(target), B = _norm(heard);
   if (!A || !B) return 0;
@@ -424,90 +307,39 @@ function _charSimilarity(target, heard) {
   const maxLen = Math.max(A.length, B.length) || 1;
   return Math.max(0, Math.min(1, 1 - dist / maxLen));
 }
-function bestTokenForSingleWord(target, heard) {
-  const t = canonicalFrench(target);
-  const tokens = canonicalFrench(heard).split(" ").filter(Boolean);
-  if (!t || !tokens.length) return "";
-  let best = { tok: tokens[0], sim: -1 };
-  for (const tok of tokens) {
-    const sim = _charSimilarity(t, tok);
-    if (sim > best.sim) best = { tok, sim };
-  }
-  return best.tok;
-}
-function scoreSpeech(target, heardRaw) {
-  const t = canonicalFrench(target);
-  const h = canonicalFrench(heardRaw);
-  if (!t || !h) return { overall: 0, pass: false, usedHeard: h, usedTarget: t };
 
-  const single = !t.includes(" ");
-  const usedHeard = single ? bestTokenForSingleWord(t, h) : h;
+function scoreSpeech(target, heard) {
+  const tCan = canonicalFrenchForScoring(target);
+  const hCan = canonicalFrenchForScoring(heard);
 
-  const sim = _charSimilarity(t, usedHeard);
+  if (!tCan || !hCan) return { overall: 0, pass: false };
+
+  if (tCan === hCan) return { overall: 100, pass: true };
+
+  const sim = _charSimilarity(tCan, hCan);
   const overall = Math.max(0, Math.min(100, Math.round(sim * 100)));
-  return { overall, pass: overall >= PASS_THRESHOLD, usedHeard, usedTarget: t };
-}
-function getIdToItemMap() {
-  const m = {};
-  for (const it of FIXED_ITEMS) m[it.id] = it;
-  return m;
-}
-const ID2ITEM = getIdToItemMap();
-
-// ---------- Init pack state ----------
-function resetPackState() {
-  container = [];
-  failsById = {};
-  testCounts = {};
-  testC_failStreak = {};
-  testTargetId = null;
-  learnCursor = 0;
-  reviewOrder = [];
-  reviewCursor = 0;
-
-  for (const it of getPackItems()) {
-    failsById[it.id] = 0;
-    testCounts[it.id] = 0;
-    testC_failStreak[it.id] = 0;
-  }
+  return { overall, pass: overall >= PASS_THRESHOLD };
 }
 
-// ---------- Start ----------
+// ---------- FLOW ----------
 resetPackState();
 render();
 
-// ---------- Flow helpers ----------
-function allLearnDoneBasicRound() {
-  return learnCursor >= getPackItems().length;
-}
 function addToContainer(id) {
   if (!container.includes(id)) container.push(id);
 }
-function startReviewIfNeededOrTests() {
-  if (container.length) {
-    mode = "review";
-    reviewOrder = [...container]; // in der Reihenfolge wie gesammelt
-    reviewCursor = 0;
-    return render();
-  }
-  // sonst direkt Test A
-  mode = "testA";
-  testTargetId = null;
-  return render();
+
+function allCountsReached2() {
+  return getPackItems().every(it => (testCounts[it.id] || 0) >= TEST_NEED_EACH);
 }
-function initTestsFresh() {
-  for (const it of getPackItems()) testCounts[it.id] = 0;
-  testTargetId = null;
-}
+
 function pickNextTargetId() {
   const pack = getPackItems();
   const remaining = pack.filter(it => (testCounts[it.id] || 0) < TEST_NEED_EACH);
   if (!remaining.length) return null;
   return remaining[Math.floor(Math.random() * remaining.length)].id;
 }
-function allTestDoneForPack() {
-  return getPackItems().every(it => (testCounts[it.id] || 0) >= TEST_NEED_EACH);
-}
+
 function nextPackOrSentences() {
   if (packIndex < getPacksCount() - 1) {
     packIndex++;
@@ -532,17 +364,33 @@ function render() {
   return renderEnd();
 }
 
-// ---------- Phase 1: Learn (in fixer Reihenfolge) ----------
+// ---------- PHASE learn ----------
 function renderLearn() {
   const pack = getPackItems();
-  const it = pack[Math.min(learnCursor, pack.length - 1)];
+  if (cursor >= currentList.length) {
+    // nach 4 Wörtern: Container nochmal oder Test A
+    if (container.length) {
+      mode = "review";
+      currentList = container.map(id => ID2ITEM[id]).filter(Boolean);
+      container = [];
+      cursor = 0;
+      // Failcounter in review NICHT resetten (kannst du später entscheiden) -> wir resetten jetzt sanft:
+      for (const it of currentList) failCount[it.id] = 0;
+      return render();
+    }
+    mode = "testA";
+    testTargetId = null;
+    return render();
+  }
+
+  const it = currentList[cursor];
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
         <div class="badge">${escapeHtml(packLabel())}</div>
         <div class="badge">Lernen</div>
-        <div class="badge">Wort ${Math.min(learnCursor + 1, pack.length)} von ${pack.length}</div>
+        <div class="badge">Wort ${cursor + 1} von ${currentList.length}</div>
       </div>
 
       <h1>1 Wort</h1>
@@ -560,7 +408,7 @@ function renderLearn() {
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
         <button id="btn-later" class="btn secondary">Später noch einmal</button>
-        <div id="learn-feedback" class="feedback" style="flex-basis:100%;"></div>
+        <div id="fb" class="feedback" style="flex-basis:100%;"></div>
       </div>
     </div>
   `;
@@ -582,87 +430,103 @@ function renderLearn() {
   setUiRefreshLocks(refresh);
   refresh();
 
-  btnHear.onclick = () => { if (!micRecording && !ttsActive) speakWord(it.word, 1.0); };
-  btnHearSlow.onclick = () => { if (!micRecording && !ttsActive) speakWord(it.word, 0.7); };
+  btnHear.onclick = () => speakWord(it.word, 1.0);
+  btnHearSlow.onclick = () => speakWord(it.word, 0.7);
 
   btnLater.onclick = async () => {
     addToContainer(it.id);
-    setFeedback("learn-feedback", "Okay – kommt später nochmal.", "bad");
-    await sleep(450);
-    learnCursor++;
-    if (allLearnDoneBasicRound()) return startReviewIfNeededOrTests();
+    setFeedback("fb", "Okay – kommt später nochmal.", "bad");
+    await sleep(350);
+    cursor++;
     renderLearn();
   };
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
+    if (!speechRecAvailable()) {
+      setFeedback("fb", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
 
-    setFeedback("learn-feedback", "Sprich jetzt…", null);
+    // Start
+    setFeedback("fb", "Sprich jetzt…", null);
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
     await sleep(120);
 
+    const started = startBrowserASR(ASR_LANG);
+    if (!started) {
+      setFeedback("fb", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
+      return;
+    }
+
     micRecording = true;
     refreshLocks();
 
-    const r = await listenSmart({ lang: ASR_LANG, maxMs: 5200, whisper: true });
+    // Hard stop (damit es NIE hängen bleibt)
+    try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+    autoStopTimer = setTimeout(async () => {
+      try {
+        const txt = await stopBrowserASR();
+        micRecording = false;
+        refreshLocks();
 
-    micRecording = false;
-    refreshLocks();
+        const heard = (txt || "").trim();
+        if (!heard) {
+          setFeedback("fb", "Ich habe nichts verstanden (leer). Nicht gezählt – bitte nochmal.", "bad");
+          return;
+        }
 
-    const heard = (r.text || "").trim();
-    if (!heard) {
-      setFeedback("learn-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Nicht gezählt.`, "bad");
-      return;
-    }
+        const res = scoreSpeech(it.word, heard);
+        if (res.pass) {
+          setFeedback("fb", `Aussprache: ${res.overall}% · Erkannt: „${heard}“ · Weiter!`, "ok");
+          await sleep(450);
+          cursor++;
+          renderLearn();
+          return;
+        }
 
-    const res = scoreSpeech(it.word, heard);
-    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
+        failCount[it.id] = (failCount[it.id] || 0) + 1;
+        const f = failCount[it.id];
 
-    if (res.pass) {
-      setFeedback("learn-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Weiter!`, "ok");
-      await sleep(650);
-      learnCursor++;
-      if (allLearnDoneBasicRound()) return startReviewIfNeededOrTests();
-      renderLearn();
-      return;
-    }
+        if (f >= FAILS_TO_CONTAINER) {
+          addToContainer(it.id);
+          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · In den Container.`, "bad");
+          await sleep(650);
+          cursor++;
+          renderLearn();
+          return;
+        }
 
-    failsById[it.id] = (failsById[it.id] || 0) + 1;
-
-    if (failsById[it.id] >= FAILS_TO_CONTAINER) {
-      addToContainer(it.id);
-      setFeedback("learn-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · In den Container.`, "bad");
-      await sleep(750);
-      learnCursor++;
-      if (allLearnDoneBasicRound()) return startReviewIfNeededOrTests();
-      renderLearn();
-      return;
-    }
-
-    setFeedback("learn-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Bitte nochmal (${failsById[it.id]}/${FAILS_TO_CONTAINER}).`, "bad");
+        setFeedback("fb", `Aussprache: ${res.overall}% · Erkannt: „${heard}“ · Nochmal (${f}/${FAILS_TO_CONTAINER}).`, "bad");
+      } catch (e) {
+        console.error(e);
+        micRecording = false;
+        refreshLocks();
+        setFeedback("fb", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
+      }
+    }, AUTO_STOP_MS);
   };
 }
 
-// ---------- Review: Container-Wörter kommen nochmal ----------
+// ---------- PHASE review (Container) ----------
 function renderReview() {
-  const pack = getPackItems();
-  const order = reviewOrder.filter(id => pack.some(x => x.id === id));
-  if (!order.length) {
+  if (cursor >= currentList.length) {
     mode = "testA";
     testTargetId = null;
     return render();
   }
-  const id = order[Math.min(reviewCursor, order.length - 1)];
-  const it = ID2ITEM[id];
+
+  // re-use learn UI, aber Badge "Container"
+  const it = currentList[cursor];
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
         <div class="badge">${escapeHtml(packLabel())}</div>
         <div class="badge">Container</div>
-        <div class="badge">${Math.min(reviewCursor + 1, order.length)} von ${order.length}</div>
+        <div class="badge">Wort ${cursor + 1} von ${currentList.length}</div>
       </div>
 
       <h1>Nochmal üben</h1>
@@ -680,7 +544,7 @@ function renderReview() {
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
         <button id="btn-next" class="btn secondary">Weiter</button>
-        <div id="rev-feedback" class="feedback" style="flex-basis:100%;"></div>
+        <div id="fb" class="feedback" style="flex-basis:100%;"></div>
       </div>
     </div>
   `;
@@ -705,62 +569,68 @@ function renderReview() {
   btnHear.onclick = () => speakWord(it.word, 1.0);
   btnHearSlow.onclick = () => speakWord(it.word, 0.7);
 
-  btnNext.onclick = () => {
-    reviewCursor++;
-    if (reviewCursor >= order.length) {
-      mode = "testA";
-      testTargetId = null;
-      return render();
-    }
-    renderReview();
-  };
+  btnNext.onclick = () => { cursor++; renderReview(); };
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
+    if (!speechRecAvailable()) {
+      setFeedback("fb", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
 
-    setFeedback("rev-feedback", "Sprich jetzt…", null);
+    setFeedback("fb", "Sprich jetzt…", null);
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
     await sleep(120);
 
-    micRecording = true;
-    refreshLocks();
-
-    const r = await listenSmart({ lang: ASR_LANG, maxMs: 5200, whisper: true });
-
-    micRecording = false;
-    refreshLocks();
-
-    const heard = (r.text || "").trim();
-    if (!heard) {
-      setFeedback("rev-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Nicht gezählt.`, "bad");
+    const started = startBrowserASR(ASR_LANG);
+    if (!started) {
+      setFeedback("fb", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
       return;
     }
 
-    const res = scoreSpeech(it.word, heard);
-    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
+    micRecording = true;
+    refreshLocks();
 
-    if (res.pass) {
-      setFeedback("rev-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Gut!`, "ok");
-    } else {
-      setFeedback("rev-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Nochmal.`, "bad");
-    }
+    try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+    autoStopTimer = setTimeout(async () => {
+      try {
+        const txt = await stopBrowserASR();
+        micRecording = false;
+        refreshLocks();
+
+        const heard = (txt || "").trim();
+        if (!heard) {
+          setFeedback("fb", "Ich habe nichts verstanden (leer). Nicht gezählt – bitte nochmal.", "bad");
+          return;
+        }
+
+        const res = scoreSpeech(it.word, heard);
+        if (res.pass) {
+          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Gut!`, "ok");
+        } else {
+          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Nochmal.`, "bad");
+        }
+      } catch (e) {
+        console.error(e);
+        micRecording = false;
+        refreshLocks();
+        setFeedback("fb", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
+      }
+    }, AUTO_STOP_MS);
   };
 }
 
-// ---------- Test A: Wort steht da + Bilder zufällig, Klick zählt nur wenn richtig ----------
+// ---------- TEST A (Wort sichtbar + hören) ----------
 function renderTestA() {
   const pack = getPackItems();
 
-  // wenn erster Einstieg
-  if (!Object.keys(testCounts).length) initTestsFresh();
-
-  // wenn fertig -> Test B
-  if (allTestDoneForPack()) {
-    initTestsFresh();
-    mode = "testB";
+  if (allCountsReached2()) {
+    // Reset counts für Test B
+    for (const it of pack) testCounts[it.id] = 0;
     testTargetId = null;
+    mode = "testB";
     return render();
   }
 
@@ -795,7 +665,7 @@ function renderTestA() {
         `).join("")}
       </div>
 
-      <div id="testA-feedback" class="feedback"></div>
+      <div id="fb" class="feedback"></div>
 
       <div class="meta" style="margin-top:8px;">
         ${pack.map(it => `<div class="badge">${escapeHtml(it.id)}: ${(testCounts[it.id]||0)}/${TEST_NEED_EACH}</div>`).join("")}
@@ -817,7 +687,6 @@ function renderTestA() {
   setUiRefreshLocks(refresh);
   refresh();
 
-  // optional: einmal abspielen
   speakWord(target.word, 1.0);
 
   btnHear.onclick = () => speakWord(target.word, 1.0);
@@ -828,28 +697,26 @@ function renderTestA() {
       const id = btn.getAttribute("data-id");
       if (id === target.id) {
         testCounts[id] = (testCounts[id] || 0) + 1;
-        setFeedback("testA-feedback", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
+        setFeedback("fb", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
         testTargetId = null;
-        await sleep(450);
+        await sleep(350);
         renderTestA();
       } else {
-        setFeedback("testA-feedback", "Falsch. Nicht gezählt – probier nochmal.", "bad");
+        setFeedback("fb", "Falsch. Nicht gezählt – probier nochmal.", "bad");
       }
     };
   });
 }
 
-// ---------- Test B: Nur hören (kein Wort angezeigt) ----------
+// ---------- TEST B (nur hören) ----------
 function renderTestB() {
   const pack = getPackItems();
-  if (allTestDoneForPack()) {
-    // Test C vorbereiten
-    for (const it of pack) {
-      testCounts[it.id] = 0;
-      testC_failStreak[it.id] = 0;
-    }
-    mode = "testC";
+
+  if (allCountsReached2()) {
+    // Reset counts für Test C
+    for (const it of pack) { testCounts[it.id] = 0; testC_failStreak[it.id] = 0; }
     testTargetId = null;
+    mode = "testC";
     return render();
   }
 
@@ -880,7 +747,7 @@ function renderTestB() {
         `).join("")}
       </div>
 
-      <div id="testB-feedback" class="feedback"></div>
+      <div id="fb" class="feedback"></div>
 
       <div class="meta" style="margin-top:8px;">
         ${pack.map(it => `<div class="badge">${escapeHtml(it.id)}: ${(testCounts[it.id]||0)}/${TEST_NEED_EACH}</div>`).join("")}
@@ -912,26 +779,29 @@ function renderTestB() {
       const id = btn.getAttribute("data-id");
       if (id === target.id) {
         testCounts[id] = (testCounts[id] || 0) + 1;
-        setFeedback("testB-feedback", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
+        setFeedback("fb", `Richtig! (${testCounts[id]}/${TEST_NEED_EACH})`, "ok");
         testTargetId = null;
-        await sleep(450);
+        await sleep(350);
         renderTestB();
       } else {
-        setFeedback("testB-feedback", "Falsch. Nicht gezählt – probier nochmal.", "bad");
+        setFeedback("fb", "Falsch. Nicht gezählt – probier nochmal.", "bad");
       }
     };
   });
 }
 
-// ---------- Test C: Bild → sprechen, zählt nur bei korrekter Aussprache ----------
+// ---------- TEST C (Bild -> sprechen) ----------
 function renderTestC() {
   const pack = getPackItems();
-  if (allTestDoneForPack()) return nextPackOrSentences();
+
+  if (allCountsReached2()) {
+    return nextPackOrSentences();
+  }
 
   if (!testTargetId) testTargetId = pickNextTargetId();
   const target = ID2ITEM[testTargetId];
-
-  const hintUnlocked = (testC_failStreak[target.id] || 0) >= TESTC_MAX_FAILS_BEFORE_HINT;
+  const streak = testC_failStreak[target.id] || 0;
+  const hintUnlocked = streak >= TESTC_HINT_AFTER;
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
@@ -955,7 +825,7 @@ function renderTestC() {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <div id="testC-feedback" class="feedback" style="flex-basis:100%;"></div>
+        <div id="fb" class="feedback" style="flex-basis:100%;"></div>
       </div>
 
       <div class="meta" style="margin-top:8px;">
@@ -984,77 +854,114 @@ function renderTestC() {
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
+    if (!speechRecAvailable()) {
+      setFeedback("fb", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
 
-    setFeedback("testC-feedback", "Sprich jetzt…", null);
+    setFeedback("fb", "Sprich jetzt…", null);
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
     await sleep(120);
 
+    const started = startBrowserASR(ASR_LANG);
+    if (!started) {
+      setFeedback("fb", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
+      return;
+    }
+
     micRecording = true;
     refreshLocks();
 
-    const r = await listenSmart({ lang: ASR_LANG, maxMs: 6500, whisper: true });
+    try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+    autoStopTimer = setTimeout(async () => {
+      try {
+        const txt = await stopBrowserASR();
+        micRecording = false;
+        refreshLocks();
 
-    micRecording = false;
-    refreshLocks();
+        const heard = (txt || "").trim();
+        if (!heard) {
+          setFeedback("fb", "Ich habe nichts verstanden (leer). Nicht gezählt – bitte nochmal.", "bad");
+          return;
+        }
 
-    const heard = (r.text || "").trim();
-    if (!heard) {
-      setFeedback("testC-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Nicht gezählt.`, "bad");
-      return;
-    }
+        const res = scoreSpeech(target.word, heard);
+        if (res.pass) {
+          testCounts[target.id] = (testCounts[target.id] || 0) + 1;
+          testC_failStreak[target.id] = 0;
+          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Gezählt! (${testCounts[target.id]}/${TEST_NEED_EACH})`, "ok");
+          testTargetId = null;
+          await sleep(500);
+          renderTestC();
+        } else {
+          testC_failStreak[target.id] = (testC_failStreak[target.id] || 0) + 1;
+          const n = testC_failStreak[target.id];
 
-    const res = scoreSpeech(target.word, heard);
-    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
-
-    if (res.pass) {
-      testCounts[target.id] = (testCounts[target.id] || 0) + 1;
-      testC_failStreak[target.id] = 0;
-      setFeedback("testC-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Gezählt! (${testCounts[target.id]}/${TEST_NEED_EACH})`, "ok");
-      testTargetId = null;
-      await sleep(650);
-      renderTestC();
-      return;
-    }
-
-    testC_failStreak[target.id] = (testC_failStreak[target.id] || 0) + 1;
-    const n = testC_failStreak[target.id];
-
-    if (n >= TESTC_MAX_FAILS_BEFORE_HINT) {
-      setFeedback("testC-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Hilfe: Ich sage das Wort.`, "bad");
-      speakWord(target.word, 1.0);
-      return;
-    }
-
-    setFeedback("testC-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Nochmal (${n}/${TESTC_MAX_FAILS_BEFORE_HINT}).`, "bad");
+          if (n >= TESTC_HINT_AFTER) {
+            setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Hilfe: Ich sage das Wort.`, "bad");
+            speakWord(target.word, 1.0);
+          } else {
+            setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Nochmal (${n}/${TESTC_HINT_AFTER}).`, "bad");
+          }
+        }
+      } catch (e) {
+        console.error(e);
+        micRecording = false;
+        refreshLocks();
+        setFeedback("fb", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
+      }
+    }, 4700);
   };
 }
 
-// ---------- Satzphase (nach allen Packs) ----------
+// ---------- SATZPHASE (nur mit euren 12 Wörtern) ----------
 function renderSentences() {
-  // sehr einfache Sätze mit euren 12 Wörtern (Bilder dazu):
-  const SENTS = [
-    { text: "Je parle.", imgId: "w10_sprechen" },
-    { text: "Vous écoutez.", imgId: "w09_hoeren" },
-    { text: "J'ouvre la porte.", imgId: "w08_tuer" },
-    { text: "J'écris.", imgId: "w12_schreiben" },
-    { text: "Le livre.", imgId: "w03_buch" },
-    { text: "Le cahier.", imgId: "w04_heft" }
+  const SENTS_EASY = [
+    { text: "Je parle.",          imgId: "w10_sprechen" },
+    { text: "Vous écoutez.",      imgId: "w09_hoeren" },
+    { text: "J'ouvre la porte.",  imgId: "w08_tuer" },
+    { text: "J'écris.",           imgId: "w12_schreiben" },
+    { text: "Le livre.",          imgId: "w03_buch" },
+    { text: "Le cahier.",         imgId: "w04_heft" },
+    { text: "Le stylo.",          imgId: "w05_stift" },
+    { text: "La table.",          imgId: "w06_tisch" },
+    { text: "La chaise.",         imgId: "w07_stuhl" }
   ];
 
-  if (window.__sent_idx == null) window.__sent_idx = 0;
-  const i = window.__sent_idx;
-  if (i >= SENTS.length) { mode = "end"; return render(); }
+  const SENTS_HARD = [
+    { text: "Je parle. Vous écoutez.",         imgId: "w10_sprechen" },
+    { text: "Vous écoutez. Je parle.",         imgId: "w09_hoeren" },
+    { text: "J'ouvre la porte. Je parle.",     imgId: "w08_tuer" },
+    { text: "Je parle et j'écris.",            imgId: "w12_schreiben" },
+    { text: "Vous écoutez et je parle.",       imgId: "w09_hoeren" }
+  ];
 
-  const s = SENTS[i];
+  if (window.__sent_stage == null) window.__sent_stage = "easy";
+  if (window.__sent_idx == null) window.__sent_idx = 0;
+
+  const list = (window.__sent_stage === "easy") ? SENTS_EASY : SENTS_HARD;
+
+  if (window.__sent_idx >= list.length) {
+    if (window.__sent_stage === "easy") {
+      window.__sent_stage = "hard";
+      window.__sent_idx = 0;
+      return renderSentences();
+    }
+    mode = "end";
+    return render();
+  }
+
+  const s = list[window.__sent_idx];
   const imgItem = ID2ITEM[s.imgId] || FIXED_ITEMS[0];
 
   appEl.innerHTML = `
     <div class="screen screen-learn">
       <div class="meta">
         <div class="badge">Satzphase</div>
-        <div class="badge">Satz ${i + 1} von ${SENTS.length}</div>
+        <div class="badge">${window.__sent_stage === "easy" ? "einfach" : "anspruchsvoller"}</div>
+        <div class="badge">Satz ${window.__sent_idx + 1} von ${list.length}</div>
       </div>
 
       <h1>Satz nachsprechen</h1>
@@ -1071,7 +978,7 @@ function renderSentences() {
 
       <div class="controls-speak" style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <button id="btn-speak" class="btn mic">Ich spreche</button>
-        <div id="sent-feedback" class="feedback" style="flex-basis:100%;"></div>
+        <div id="fb" class="feedback" style="flex-basis:100%;"></div>
       </div>
     </div>
   `;
@@ -1096,42 +1003,59 @@ function renderSentences() {
 
   btnSpeak.onclick = async () => {
     if (micRecording || ttsActive) return;
+    if (!speechRecAvailable()) {
+      setFeedback("fb", "Spracherkennung nicht verfügbar. Bitte Chrome/Edge nutzen.", "bad");
+      return;
+    }
 
-    setFeedback("sent-feedback", "Sprich jetzt…", null);
+    setFeedback("fb", "Sprich jetzt…", null);
     try { window.speechSynthesis.cancel(); } catch {}
     ttsActive = false;
     refreshLocks();
     await sleep(120);
 
-    micRecording = true;
-    refreshLocks();
-
-    const r = await listenSmart({ lang: ASR_LANG, maxMs: 8000, whisper: true });
-
-    micRecording = false;
-    refreshLocks();
-
-    const heard = (r.text || "").trim();
-    if (!heard) {
-      setFeedback("sent-feedback", `Ich habe nichts verstanden (leer). Quelle=${r.source} Fehler=${r.error || "-"} · Nicht gezählt.`, "bad");
+    const started = startBrowserASR(ASR_LANG);
+    if (!started) {
+      setFeedback("fb", "Spracherkennung konnte nicht starten. Bitte Seite neu laden.", "bad");
       return;
     }
 
-    const res = scoreSpeech(s.text, heard);
-    const srcInfo = r.source === "whisper" ? "Whisper" : "Browser";
+    micRecording = true;
+    refreshLocks();
 
-    if (res.pass) {
-      setFeedback("sent-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Weiter!`, "ok");
-      window.__sent_idx++;
-      await sleep(800);
-      renderSentences();
-    } else {
-      setFeedback("sent-feedback", `Aussprache: ${res.overall}% · (${srcInfo}) „${heard}“ · Nochmal.`, "bad");
-    }
+    try { if (autoStopTimer) clearTimeout(autoStopTimer); } catch {}
+    autoStopTimer = setTimeout(async () => {
+      try {
+        const txt = await stopBrowserASR();
+        micRecording = false;
+        refreshLocks();
+
+        const heard = (txt || "").trim();
+        if (!heard) {
+          setFeedback("fb", "Ich habe nichts verstanden (leer). Nicht gezählt – bitte nochmal.", "bad");
+          return;
+        }
+
+        const res = scoreSpeech(s.text, heard);
+        if (res.pass) {
+          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Weiter!`, "ok");
+          window.__sent_idx++;
+          await sleep(650);
+          renderSentences();
+        } else {
+          setFeedback("fb", `Aussprache: ${res.overall}% · „${heard}“ · Nochmal.`, "bad");
+        }
+      } catch (e) {
+        console.error(e);
+        micRecording = false;
+        refreshLocks();
+        setFeedback("fb", "Fehler beim Prüfen. Bitte nochmal versuchen.", "bad");
+      }
+    }, 7000);
   };
 }
 
-// ---------- End ----------
+// ---------- END ----------
 function renderEnd() {
   appEl.innerHTML = `
     <div class="screen screen-end">
@@ -1141,6 +1065,7 @@ function renderEnd() {
     </div>
   `;
   document.getElementById("btn-restart").onclick = () => {
+    window.__sent_stage = "easy";
     window.__sent_idx = 0;
     packIndex = 0;
     mode = "learn";
@@ -1149,161 +1074,6 @@ function renderEnd() {
   };
 }
 
-// util (kleiner Trick für Levenshtein ohne 2D-Array)
-function Rn(n){ return n; }
-function Rm(m){ return m; }
-function Rb(b){ return b; }
-function Rv(v){ return v; }
-function Ru(u){ return u; }
-function Rx(x){ return x; }
-function Ry(y){ return y; }
-function Rz(z){ return z; }
-function Ra(a){ return a; }
-function Rc(c){ return c; }
-function Rd(d){ return d; }
-function Re(e){ return e; }
-function Rf(f){ return f; }
-function Rg(g){ return g; }
-function Rh(h){ return h; }
-function Ri(i){ return i; }
-function Rj(j){ return j; }
-function Rk(k){ return k; }
-function Rl(l){ return l; }
-function Rm2(m){ return m; }
-function Rn2(n){ return n; }
-function Ro(o){ return o; }
-function Rp(p){ return p; }
-function Rq(q){ return q; }
-function Rr(r){ return r; }
-function Rs(s){ return s; }
-function Rt(t){ return t; }
-function Ru2(u){ return u; }
-
-// tiny helper for dp size
-function RSize(n){ return n; }
-function RArr(n){ return n; }
-function RLen(n){ return n; }
-function RCalc(n){ return n; }
-function Rp1(n){ return n; }
-function RPlus(n){ return n; }
-function RDot(n){ return n; }
-
-function R(n){ return n; }
-function R2(n){ return n; }
-function R3(n){ return n; }
-
-function R4(n){ return n; }
-function R5(n){ return n; }
-
-function R6(n){ return n; }
-
-// allocate dp as flat (m+1)*(n+1)
-function R7(n){ return n; }
-function R8(n){ return n; }
-
-function R9(n){ return n; }
-function R10(n){ return n; }
-
-function R11(n){ return n; }
-
-function R12(n){ return n; }
-
-// short alias
-function R13(n){ return n; }
-
-// dp allocate helper
-function R14(n){ return n; }
-
-function R15(n){ return n; }
-
-function R16(n){ return n; }
-
-function R17(n){ return n; }
-
-function R18(n){ return n; }
-
-function R19(n){ return n; }
-
-function R20(n){ return n; }
-
-function R21(n){ return n; }
-
-function R22(n){ return n; }
-
-function R23(n){ return n; }
-
-function R24(n){ return n; }
-
-function R25(n){ return n; }
-
-function R26(n){ return n; }
-
-function R27(n){ return n; }
-
-function R28(n){ return n; }
-
-function R29(n){ return n; }
-
-function R30(n){ return n; }
-
-function R31(n){ return n; }
-
-function R32(n){ return n; }
-
-function R33(n){ return n; }
-
-function R34(n){ return n; }
-
-function R35(n){ return n; }
-
-function R36(n){ return n; }
-
-function R37(n){ return n; }
-
-function R38(n){ return n; }
-
-function R39(n){ return n; }
-
-function R40(n){ return n; }
-
-// compact dp factory
-function Rdp(n){ return n; }
-function Rn_(n){ return n; }
-
-function RdpMake(len){
-  const a = new Array(len);
-  for (let i=0;i<len;i++) a[i]=0;
-  return a;
-}
-function Rndp(n){ return n; }
-function R_lev(a,b){ return _levenshtein(a,b); }
-
-// override dp allocation call used above
-function Rn(n){ return n; }
-function Rm(m){ return m; }
-
-// small helper used in _levenshtein above
-function Rn(m){ return m; }
-function Rm(n){ return n; }
-
-// patch: use our dp factory
-function Rn(m){ return m; }
-function Rm(n){ return n; }
-function R2D(){}
-
-function RdpFlat(len){ return RdpMake(len); }
-function RdpIdx(i,j,n){ return i*(n+1)+j; }
-
-// Replace dp allocation in _levenshtein (we already used dp as Array + idx()) – this section is harmless.
-
-function RLEV(){}
-function RPatch(){}
-
-// dp size helper used earlier:
-function Rn(n){ return n; }
-
-// IMPORTANT: The helper functions above are no-ops and safe.
-// (They exist only because some minifiers in older versions of this project expected identifiers.)
 
 
 
